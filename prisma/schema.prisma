@@ -1,0 +1,468 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== CORE USER & RBAC SYSTEM ====================
+model User {
+  id                    Int                    @id @default(autoincrement())
+  name                  String
+  email                 String                 @unique
+  password              String?
+  phone                 String?
+  gender                String?
+  avatar                String?
+  isActive              Boolean                @default(true)
+  type_account          String                 @default("normal")
+  role                  String                 @default("user")
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  resetToken            String?
+  resetTokenExpiry      DateTime?
+
+  // Stock system relations
+  portfolios            Portfolio[]
+  watchlists           Watchlist[]
+  stockAlerts          StockAlert[]
+  apiRequests          ApiRequest[]
+  chatConversations    ChatConversation[]
+  tradingAccounts      TradingAccount[]
+
+  // RBAC relations (ADD THESE)
+  userRoles             UserRole[]
+  auditLogs             AuditLog[]
+  chatMessages          ChatMessage[]
+
+  @@map("users")
+}
+
+// ==================== RBAC SYSTEM ====================
+model Role {
+  id              Int              @id @default(autoincrement())
+  name            String           @unique
+  description     String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  rolePermissions RolePermission[]
+  users           UserRole[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  userId    Int
+  roleId    Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model Permission {
+  id              Int              @id @default(autoincrement())
+  name            String           @unique
+  description     String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int
+  permissionId Int
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  action     String
+  resource   String?
+  resourceId Int?
+  method     String
+  route      String
+  ip         String?
+  userAgent  String?
+  payload    Json?
+  createdAt  DateTime @default(now())
+  userId     Int?
+  user       User?    @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
+
+// ==================== STOCK TRADING SYSTEM ====================
+model Portfolio {
+  id          Int       @id @default(autoincrement())
+  userId      Int
+  name        String
+  description String?
+  isDefault   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     PortfolioItem[]
+  snapshots PortfolioSnapshot[]
+
+  @@map("portfolios")
+}
+
+model PortfolioItem {
+  id           Int       @id @default(autoincrement())
+  portfolioId  Int
+  symbol       String
+  quantity     Int
+  averagePrice Decimal   @db.Decimal(10, 2)
+  currentPrice Decimal?  @db.Decimal(10, 2)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@unique([portfolioId, symbol])
+  @@map("portfolio_items")
+}
+
+model PortfolioSnapshot {
+  id           Int      @id @default(autoincrement())
+  portfolioId  Int
+  totalValue   Decimal  @db.Decimal(15, 2)
+  snapshotDate DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@map("portfolio_snapshots")
+}
+
+model Watchlist {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items WatchlistItem[]
+
+  @@map("watchlists")
+}
+
+model WatchlistItem {
+  id          Int      @id @default(autoincrement())
+  watchlistId Int
+  symbol      String
+  note        String?
+  createdAt   DateTime @default(now())
+
+  watchlist Watchlist @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+
+  @@unique([watchlistId, symbol])
+  @@map("watchlist_items")
+}
+
+model StockAlert {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  symbol      String
+  alertType   StockAlertType
+  targetValue Decimal  @db.Decimal(10, 2)
+  isActive    Boolean  @default(true)
+  triggeredAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("stock_alerts")
+}
+
+// ==================== TRADING SYSTEM ====================
+model TradingAccount {
+  id            Int               @id @default(autoincrement())
+  userId        Int
+  accountNumber String            @unique
+  accountName   String
+  brokerName    String            @default("DEMO") // VCBS, SSI, HSC, DEMO
+  balance       Decimal           @db.Decimal(15, 2) @default(100000000) // 100 triệu VND
+  availableCash Decimal           @db.Decimal(15, 2) @default(100000000)
+  status        TradingAccountStatus @default(ACTIVE)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders        Order[]
+  positions     Position[]
+  
+  @@map("trading_accounts")
+}
+
+model Order {
+  id              Int             @id @default(autoincrement())
+  accountId       Int
+  symbol          String
+  orderType       OrderType       // MARKET, LIMIT, STOP
+  side            OrderSide       // BUY, SELL
+  quantity        Int
+  price           Decimal?        @db.Decimal(10, 2) // NULL for MARKET orders
+  stopPrice       Decimal?        @db.Decimal(10, 2) // For STOP orders
+  status          OrderStatus     @default(PENDING)
+  filledQuantity  Int             @default(0)
+  averagePrice    Decimal?        @db.Decimal(10, 2)
+  orderDate       DateTime        @default(now())
+  expiryDate      DateTime?       // For GTC orders
+  notes           String?
+  rejectionReason String?
+  
+  account         TradingAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  executions      Execution[]
+  
+  @@index([accountId])
+  @@index([symbol])
+  @@index([orderDate])
+  @@index([status])
+  @@map("orders")
+}
+
+model Execution {
+  id              Int             @id @default(autoincrement())
+  orderId         Int
+  symbol          String
+  quantity        Int
+  price           Decimal         @db.Decimal(10, 2)
+  executionTime   DateTime        @default(now())
+  commission      Decimal         @db.Decimal(10, 2) @default(0)
+  tax             Decimal         @db.Decimal(10, 2) @default(0)
+  exchange        String          // HOSE, HNX, UPCOM
+  
+  order           Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  
+  @@index([orderId])
+  @@index([symbol])
+  @@index([executionTime])
+  @@map("executions")
+}
+
+model Position {
+  id              Int             @id @default(autoincrement())
+  accountId       Int
+  symbol          String
+  quantity        Int             @default(0)
+  averagePrice    Decimal         @db.Decimal(10, 2) @default(0)
+  currentPrice    Decimal?        @db.Decimal(10, 2)
+  unrealizedPL    Decimal         @db.Decimal(15, 2) @default(0)
+  realizedPL      Decimal         @db.Decimal(15, 2) @default(0)
+  lastUpdated     DateTime        @default(now())
+  
+  account         TradingAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  
+  @@unique([accountId, symbol])
+  @@map("positions")
+}
+
+// ==================== CHAT & AI SYSTEM ====================
+model ChatConversation {
+  id              Int                    @id @default(autoincrement())
+  userId          Int?
+  sessionId       String?
+  title           String?
+  status          ChatConversationStatus @default(ACTIVE)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  user     User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  messages ChatMessage[]
+
+  @@index([sessionId])
+  @@index([userId])
+  @@map("chat_conversations")
+}
+
+model ChatMessage {
+  id             Int              @id @default(autoincrement())
+  conversationId Int
+  senderId       Int?
+  senderType     SenderType
+  message        String
+  metadata       Json? // Store function calls, stock data, analysis results
+  sessionId      String?
+  isRead         Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  
+  conversation   ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User?            @relation(fields: [senderId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId])
+  @@index([createdAt])
+  @@index([sessionId])
+  @@map("chat_messages")
+}
+
+// ==================== MARKET DATA SYSTEM ====================
+model StockDataCache {
+  symbol      String   @id
+  data        Json     // Full stock data from external APIs
+  lastUpdated DateTime @default(now())
+  expiresAt   DateTime
+
+  @@map("stock_data_cache")
+}
+
+model MarketNews {
+  id          Int      @id @default(autoincrement())
+  symbol      String?
+  title       String
+  content     String?
+  source      String
+  url         String?
+  publishedAt DateTime
+  sentiment   Float?   // -1 to 1 sentiment score
+  createdAt   DateTime @default(now())
+
+  @@index([symbol])
+  @@index([publishedAt])
+  @@map("market_news")
+}
+
+model TechnicalIndicator {
+  id        Int      @id @default(autoincrement())
+  symbol    String
+  indicator String   // RSI, MACD, EMA, etc.
+  value     Decimal  @db.Decimal(10, 4)
+  timeframe String   // 1d, 1w, 1m
+  date      DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([symbol, indicator, timeframe, date])
+  @@index([symbol])
+  @@index([date])
+  @@map("technical_indicators")
+}
+
+// ==================== REAL-TIME ORDER DATA ====================
+model RealTimeOrder {
+  id          Int      @id @default(autoincrement())
+  symbol      String
+  price       Decimal  @db.Decimal(10, 2)
+  quantity    Int
+  side        OrderSide // BUY, SELL
+  orderType   OrderType
+  timestamp   DateTime @default(now())
+  isSimulated Boolean  @default(true) // For demo data
+
+  @@index([symbol])
+  @@index([timestamp])
+  @@index([side])
+  @@map("real_time_orders")
+}
+
+model MarketDepth {
+  id          Int      @id @default(autoincrement())
+  symbol      String
+  price       Decimal  @db.Decimal(10, 2)
+  quantity    Int
+  side        OrderSide // BID, ASK
+  level       Int      // Price level (1-10)
+  timestamp   DateTime @default(now())
+  isSimulated Boolean  @default(true)
+
+  @@unique([symbol, side, level])
+  @@index([symbol])
+  @@index([timestamp])
+  @@map("market_depth")
+}
+
+// ==================== API & PERFORMANCE SYSTEM ====================
+model ApiRequest {
+  id          Int      @id @default(autoincrement())
+  userId      Int?
+  endpoint    String
+  method      String
+  statusCode  Int?
+  responseTime Int?    // in milliseconds
+  requestedAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([requestedAt])
+  @@index([endpoint])
+  @@map("api_requests")
+}
+
+// ==================== ENUMS ====================
+enum ChatConversationStatus {
+  ACTIVE
+  CLOSED
+  ARCHIVED
+}
+
+enum SenderType {
+  USER
+  GUEST
+  BOT
+  ADMIN
+  ASSISTANT
+}
+
+enum StockAlertType {
+  PRICE_ABOVE
+  PRICE_BELOW
+  PERCENT_UP
+  PERCENT_DOWN
+  VOLUME_SPIKE
+}
+
+enum TradingAccountStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+  STOP
+  STOP_LIMIT
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderStatus {
+  PENDING
+  PARTIALLY_FILLED
+  FILLED
+  CANCELLED
+  REJECTED
+  EXPIRED
+}
+
+model PasswordResetToken {
+  id        Int      @id @default(autoincrement())
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@map("password_reset_tokens")
+}

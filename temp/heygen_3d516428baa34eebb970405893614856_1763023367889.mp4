@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en" translate="no">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=0, viewport-fit=cover"
+    />
+    <meta name="google" content="notranslate" />
+
+    <!-- Open Graph data -->
+    <meta property="og:title" content="HeyGen - AI Spokesperson Video Creator" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://app.heygen.com" />
+    <meta property="og:image" content="https://static.heygen.ai/heygen/asset/og.png" />
+    <meta property="og:description" content="Create customized videos using HeyGen's AI Video Generator, turning scripts into talking videos with customizable AI avatars in minutes, without a camera or crew." />
+    <meta property="og:site_name" content="HeyGen" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter Card data -->
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:site" content="@HEYGEN_SEO_SITE_NAME" />
+    <meta name="twitter:title" content="HeyGen - AI Spokesperson Video Creator" />
+    <meta name="twitter:description" content="Create customized videos using HeyGen's AI Video Generator, turning scripts into talking videos with customizable AI avatars in minutes, without a camera or crew." />
+    <meta name="twitter:image" content="https://static.heygen.ai/heygen/asset/og.png" />
+
+    <link rel="apple-touch-icon" sizes="114x114" href="/apple-touch-icon.png" type="image/png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="icon" href="/favicon.ico" />
+    <title>HeyGen - AI Spokesperson Video Creator</title>
+    <link rel="canonical" href="https://app.heygen.com" />
+    <link rel="preconnect" href="https://static.heygen.ai" crossorigin />
+    <link rel="preconnect" href="https://www.googletagmanager.com" />
+
+    <script>
+      if (window.global === undefined) {
+        window.global = window;
+      }
+    </script>
+    <script>
+      // jump terser
+      (function (global) {
+        ['log', 'trace'].forEach(function (func) {
+          globalThis[func] = console[func].bind(console);
+        });
+      })(globalThis);
+    </script>
+    <script>
+      // inject env
+      (function (global) {
+        globalThis['BUILD_TS'] = '1763021027528';
+        globalThis['BUILD_TIME'] = Number('1763021027528');
+        globalThis['VERSION'] = '4.1.0';
+        globalThis['NODE_BUILD_TAG'] = 'app-v4.1.0-2025.11.13.00.02.55';
+        globalThis['HEYGEN_PACKAGE_NAME'] = 'APP';
+        globalThis['NODE_MOBILE_WEB'] = '%NODE_MOBILE_WEB%';
+        globalThis['NODE_ENV'] = 'production';
+      })(globalThis);
+    </script>
+    <script>
+      // Mobile web bundle detection and redirect logic
+      (function() {
+        const isMobileWebBundle = globalThis['NODE_MOBILE_WEB'] === 'true';
+        const isDevelopment = globalThis['NODE_ENV'] === 'development';
+
+        // Simple cookie getter (no dependencies)
+        function getCookie(name) {
+          const match = document.cookie.match(new RegExp('(^|;\\s*)' + name + '=([^;]*)'));
+          return match ? match[2] : null;
+        }
+
+        const isMobileDevice = /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+          navigator.userAgent
+        );
+
+        const isMwebCookieTrue = getCookie('mweb') === 'true';
+        const APP_HEYGEN_COM_URL = 'https://app.heygen.com' + window.location.pathname + window.location.search + window.location.hash;
+        const MOBILE_WEB_URL = 'https://m.heygen.com' + window.location.pathname + window.location.search + window.location.hash;
+
+        const DEV_APP_URL = 'http://localhost:8081'
+        const DEV_MOBILE_WEB_URL = 'http://localhost:8088'
+
+        const APP = isDevelopment ? DEV_APP_URL : APP_HEYGEN_COM_URL;
+        const MOBILE_WEB = isDevelopment ? DEV_MOBILE_WEB_URL : MOBILE_WEB_URL;
+
+        if ((!isMwebCookieTrue || !isMobileDevice) && isMobileWebBundle) {
+          window.location.replace(APP);
+          return;
+        }
+
+        if (isMwebCookieTrue && isMobileDevice && !isMobileWebBundle) {
+          window.location.replace(MOBILE_WEB);
+        }
+      })();
+    </script>
+    <meta
+      name="description"
+      content="Create customized videos using HeyGen's AI Video Generator, turning scripts into talking videos with customizable AI avatars in minutes, without a camera or crew."
+    />
+    <meta
+      name="keywords"
+      content="AI spokesperson, talking avatar, corporate training, online learning, promotional video, explainer video, AI avatar video, voice clone"
+    />
+    <!-- GSAP Animation Library for Canvas: DO NOT MOVE otherwise premium motion will not work -->
+    <script
+    src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"
+    crossorigin="anonymous"
+    defer
+  ></script>
+    <script type="module" crossorigin src="/index-DEJXqpth.js"></script>
+    <link rel="modulepreload" crossorigin href="/vendor-Be_M2Wwp.js">
+    <link rel="modulepreload" crossorigin href="/react-vendor-xnJ7oqHS.js">
+    <link rel="stylesheet" crossorigin href="/react-vendor-DT6ygBg-.css">
+    <link rel="stylesheet" crossorigin href="/index-CSBje1s9.css">
+    <meta http-equiv="Content-Security-Policy" content="frame-src &#39;self&#39; *.typeform.com *.stripe.com *.stripe.network *.google.com https://challenges.cloudflare.com calendly.com recaptcha.net intercom-sheets.com *.youtube.com td.doubleclick.net *.heygen.ai *.heygen.com *.jam.dev *.googletagmanager.com blob: renderer.gist.build code.gist.build *.chargebee.com heygen-test.chargebee.com heygen.chargebee.com https://app.tolgee.io; worker-src &#39;self&#39; blob:; connect-src &#39;self&#39; *.pexels.com *.mock.pstmn.io *.getrewardful.com *.posthog.com *.intercom.io wss://nexus-websocket-a.intercom.io *.intercomcdn.com *.heygen.ai *.heygencdn.com *.heygen.com quickchart.io m.media-amazon.com *.cloudfront.net *.amazonaws.com *.google.com *.google-analytics.com browser-intake-datadoghq.com *.browser-intake-datadoghq.com *.linkedin.com *.facebook.com *.twitter.com *.tiktok.com t.co stats.g.doubleclick.net *.stytch.com wss://api.heygen.com blob: data: https://*.daily.co wss://*.daily.co wss://*.heygen.com wss://*.livekit.cloud https://*.livekit.cloud https://*.syftdata.com https://*.sy-d.io https://edge.fullstory.com https://rs.fullstory.com https://*.logrocket.io https://*.lr-ingest.io https://*.logrocket.com https://*.lr-in.com https://*.lr-in-prod.com https://*.lr-ingest.com https://*.ingest-lr.com https://*.lr-intake.com https://*.intake-lr.com https://*.logr-ingest.com https://*.lrkt-in.com https://*.lgrckt-in.com https://*.customer.io https://*.api.gist.build https://*.cloud.gist.build *.velt.dev *.firebaseio.com *.googleapis.com wss://*.firebaseio.com *.gettyimages.com https://app.tolgee.io wss://2ffw53dqvbeg5owewcif4mzjxq.appsync-realtime-api.us-east-2.amazonaws.com https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com https://simpleicons.org https://api.cobrowse.io wss://*.cobrowse.io; font-src &#39;self&#39; fonts.gstatic.com *.heygencdn.com *.heygen.ai *.cloudflare.com *.intercomcdn.com at.alicdn.com data: blob:; img-src &#39;self&#39; *.heygen.com *.heygencdn.com *.heygen.ai *.cloudfront.net *.amazonaws.com *.media-amazon.com *.intercomassets.com *.intercomcdn.com i.ytimg.com images.unsplash.com quickchart.io images.pexels.com *.linkedin.com *.facebook.com *.twitter.com t.co www.google.es www.google.vn www.google.nl www.google.in www.google.com.tw www.google.co www.google.it www.google.ae www.google.ru www.google.ca www.google.be www.google.co.in www.google.de www.google.com.vn www.google.co.jp googleads.g.doubleclick.net www.google.com.ph www.google.ae www.google.dk www.google.com.bd www.google.com.co www.google.co.uk www.google.co.th www.google.fr www.google.co.kr www.google.pl www.google.jo www.google.co.uz www.google.ch www.google.com.ua www.google.com.hk *.media-amazon.com *.etsystatic.com *.ebayimg.com *.shopify.com *.mzstatic.com *.googleusercontent.com *.gettyimages.com data: blob: https://storage.googleapis.com/ https://firebasestorage.googleapis.com/ https://app.tolgee.io i.vimeocdn.com *.fal.media; manifest-src &#39;self&#39;; media-src &#39;self&#39; *.heygen.com *.heygencdn.com *.heygen.ai *.amazonaws.com js.intercomcdn.com *.vimeo.com *.akamaized.net *.pexels.com *.media-amazon.com *.etsystatic.com *.ebayimg.com *.shopify.com blob: data: https://storage.googleapis.com/ https://firebasestorage.googleapis.com/ *.gettyimages.com *.cloudfront.net https://app.tolgee.io https://simpleicons.org https://cdn.jsdelivr.net; object-src *.google.com; script-src &#39;self&#39; blob: https://static.heygencdn.com https://static.heygen.ai https://challenges.cloudflare.com https://js.stripe.com https://stats.g.doubleclick.net https://googleads.g.doubleclick.net https://www.googletagmanager.com https://accounts.google.com https://recaptcha.net https://www.gstatic.com https://www.gstatic.cn https://td.doubleclick.net https://www.googleadservices.com https://widget.intercom.io https://js.intercomcdn.com https://appleid.cdn-apple.com https://*.velt.dev https://*.firebaseio.com https://*.googleapis.com wss://*.firebaseio.com https://snap.licdn.com https://static.ads-twitter.com https://connect.facebook.net https://analytics.tiktok.com https://us-assets.i.posthog.com https://cdn.logrocket.io https://cdn.lr-ingest.io https://cdn.lr-in.com https://cdn.lr-in-prod.com https://cdn.lr-ingest.com https://cdn.ingest-lr.com https://cdn.lr-intake.com https://cdn.intake-lr.com https://cdn.logr-ingest.com https://cdn.lrkt-in.com https://cdn.lgrckt-in.com https://edge.fullstory.com https://app.posthog.com https://data.heygen.com &#39;unsafe-eval&#39; *.stytch.com https://*.daily.co https://cdn.sy-d.io https://js.jam.dev data: &#39;unsafe-inline&#39; https://*.customer.io https://code.gist.build https://app.tolgee.io https://js.cobrowse.io &#39;sha256-PhIUVzLAGyeWu9vQGqZd05AAUH9ojRbR271NBFJsHlY=&#39; &#39;sha256-PicuxJ3x4FPQL6g00BbdAysoP+BFSjn8hcUtHrNSL8Q=&#39; &#39;sha256-tiLVmsWj5RHk7iQZuw5VeLesXsl9fjN0L34RqOZbt+g=&#39; &#39;sha256-GVIKhh7Xza+A9546ryUDOC2wqMRIAtQBsaD5hhXYVoc=&#39; &#39;sha256-Vu+ndZ3TIpjlw0SplY9ZYEBUmppbCmMKETYIXYqW3sA=&#39; &#39;sha256-sA0otkNgm3GHIXpGNzZ2gWNTab4F4NsOBBAov4EOSyg=&#39; &#39;sha256-0QY9AgFya7L1mnqDyVQZn5ATI19Jfgn+v66/CbqWgQY=&#39; &#39;sha256-6cleQO+TR0l+nPrNRSzISfHwnohAJBqzZ/GjQ1H6Lmc=&#39; &#39;sha256-zyB7WcnyNL2kjEK0oYOnFOe8wWf50yTBWxTj/wd7QDw=&#39;; style-src &#39;self&#39; &#39;unsafe-inline&#39; *.heygen.ai *.google.com fonts.googleapis.com https://www.googletagmanager.com code.gist.build; form-action &#39;self&#39; https://api-iam.intercom.io;">
+    <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
+  </head>
+  <body>
+    <!-- todo -->
+    <div id="root"></div>
+
+
+    <!-- Non-critical scripts moved to end of body -->
+
+    <!-- Analytics and Tracking -->
+    <script>if(window.self === window.top)(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+      new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+      j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.defer=true;j.src=
+      'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+      })(window,document,'script','dataLayer','GTM-MW3PPLW9');</script>
+    <script type="text/javascript">!function(t){if(window.syftc=t,window.syft)return;window.syft=[],["identify","track","page","signup"].forEach(function(t){window.syft[t]=function(){var s=[].slice.call(arguments);s.unshift(t),window.syft.push(s)}});var s=document.createElement("script");s.defer=!0,s.setAttribute("src","https://cdn.sy-d.io/syftnext/syft.umd.js"),(document.body||document.head).appendChild(s)}({sourceId:"cm0bcgc6p000dzngzahf8qjhy", enableRealTimeID: true, realTimeIDTimeout: 500});</script>
+
+    <!-- Payment -->
+    <script src="https://js.stripe.com/acacia/stripe.js" defer></script>
+
+    <!-- UI Libraries -->
+
+    <script src="https://static.heygen.ai/movio_static/iconfont/iconpark.es5.js?ts=1763021027528" defer></script>
+    <script src="https://static.heygen.ai/movio_static/iconfont/iconfont.js?t=1763021027528" defer></script>
+
+    <!-- Affiliate Tracking -->
+    <script>
+      (function (w, r) {
+        w._rwq = r;
+        w[r] =
+          w[r] ||
+          function () {
+            (w[r].q = w[r].q || []).push(arguments);
+          };
+      })(window, 'rewardful');
+    </script>
+    <script defer src="/js/rw.js" data-rewardful="943759"></script>
+
+    <!-- Customer.io Analytics -->
+    <script defer>
+      !function(){var i="cioanalytics", analytics=(window[i]=window[i]||[]);if(!analytics.initialize)if(analytics.invoked)window.console&&console.error&&console.error("Snippet included twice.");else{analytics.invoked=!0;analytics.methods=["trackSubmit","trackClick","trackLink","trackForm","pageview","identify","reset","group","track","ready","alias","debug","page","once","off","on","addSourceMiddleware","addIntegrationMiddleware","setAnonymousId","addDestinationMiddleware"];analytics.factory=function(e){return function(){var t=Array.prototype.slice.call(arguments);t.unshift(e);analytics.push(t);return analytics}};for(var e=0;e<analytics.methods.length;e++){var key=analytics.methods[e];analytics[key]=analytics.factory(key)}analytics.load=function(key,e){var t=document.createElement("script");t.type="text/javascript";t.defer=!0;t.setAttribute('data-global-customerio-analytics-key', i);t.src="https://cdp.customer.io/v1/analytics-js/snippet/" + key + "/analytics.min.js";var n=document.getElementsByTagName("script")[0];n.parentNode.insertBefore(t,n);analytics._writeKey=key;analytics._loadOptions=e};analytics.SNIPPET_VERSION="4.15.3";
+        analytics.load(
+          "1c73d7372cad70e033ea",
+          {
+            "integrations": {
+              "Customer.io In-App Plugin": {
+                siteId: "a5bce59bcb810322ca38"
+              }
+            }
+          }
+        );
+        analytics.page();
+      }}();
+    </script>
+
+    <!-- Intercom Support Chat -->
+    <script defer>
+      // We pre-filled your app ID in the widget URL: 'https://widget.intercom.io/widget/oiknz8io'
+      (function () {
+        var w = window;
+        var ic = w.Intercom;
+        if (typeof ic === 'function') {
+          ic('reattach_activator');
+          ic('update', w.intercomSettings);
+        } else {
+          var d = document;
+          var i = function () {
+            i.c(arguments);
+          };
+          i.q = [];
+          i.c = function (args) {
+            i.q.push(args);
+          };
+          w.Intercom = i;
+
+          var count = 0;
+          var max = 3;
+          var l = function () {
+            var s = d.createElement('script');
+            s.onerror = function(){
+              // retry
+              if(count < max){
+                count++;
+                setTimeout(() => {
+                  l();
+                }, 3000);
+              }
+            }
+            s.type = 'text/javascript';
+            s.defer = true;
+            s.src = 'https://widget.intercom.io/widget/oiknz8io';
+            var x = d.getElementsByTagName('script')[0];
+            x.parentNode.insertBefore(s, x);
+          };
+          if (document.readyState === 'complete') {
+            l();
+          } else if (w.attachEvent) {
+            w.attachEvent('onload', l);
+          } else {
+            w.addEventListener('load', l, false);
+          }
+        }
+      })();
+    </script>
+    <noscript>
+      <iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MW3PPLW9"
+      height="0" width="0" style="display:none;visibility:hidden"></iframe>
+    </noscript>
+  </body>
+</html>
