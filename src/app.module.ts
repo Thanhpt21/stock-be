@@ -14,6 +14,12 @@ import { RedisModule } from './core/redis/redis.module';
 import { UserRoleModule } from './modules/user-role/user-role.module';
 import { StockModule } from './modules/stock/stock.module';
 import { WatchlistModule } from './modules/watchlist/watchlist.module';
+import { PortfolioModule } from './modules/portfolio/portfolio.module';
+import { PortfolioItemModule } from './modules/portfolio-item/portfolio-item.module';
+import { PortfolioSnapshotModule } from './modules/portfolio-snapshot/portfolio-snapshot.module';
+import { TradingAccountModule } from './modules/trading-account/trading-account.module';
+import { OrderModule } from './modules/order/order.module';
+import { PositionModule } from './modules/position/position.module';
 
 
 @Module({
@@ -33,7 +39,13 @@ import { WatchlistModule } from './modules/watchlist/watchlist.module';
     RedisModule,
     UserRoleModule,
     StockModule,
-    WatchlistModule
+    WatchlistModule,
+    PortfolioModule,
+    PortfolioItemModule,
+    PortfolioSnapshotModule,
+    TradingAccountModule,
+    OrderModule,
+    PositionModule
   ],
   controllers: [AppController],
   providers: [AppService],
