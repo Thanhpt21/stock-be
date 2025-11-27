@@ -378,7 +378,7 @@ model MarketDepth {
   symbol      String
   price       Decimal  @db.Decimal(10, 2)
   quantity    Int
-  side        OrderSide // BID, ASK
+  side        MarketDepthSide
   level       Int      // Price level (1-10)
   timestamp   DateTime @default(now())
   isSimulated Boolean  @default(true)
@@ -422,6 +422,7 @@ enum SenderType {
   ASSISTANT
 }
 
+
 enum StockAlertType {
   PRICE_ABOVE
   PRICE_BELOW
@@ -442,6 +443,12 @@ enum OrderType {
   STOP
   STOP_LIMIT
 }
+
+enum MarketDepthSide {
+  BID
+  ASK
+}
+
 
 enum OrderSide {
   BUY

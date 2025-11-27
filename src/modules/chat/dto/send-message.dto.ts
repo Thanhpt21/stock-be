@@ -1,9 +1,7 @@
-import { Type } from 'class-transformer';
 import { IsString, IsOptional, IsInt, IsObject, MinLength } from 'class-validator';
 
 export class SendMessageDto {
   @IsOptional()
-   @Type(() => Number)
   @IsInt()
   conversationId?: number;
 
@@ -23,9 +21,6 @@ export class MigrateMessagesDto {
 
   @IsInt()
   userId: number;
-
-  @IsInt()
-  tenantId: number;
 }
 
 export class GetMessagesDto {

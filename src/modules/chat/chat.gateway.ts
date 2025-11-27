@@ -8,93 +8,131 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { ChatRedisService } from './redis/chat-redis.service';
-import { v4 as uuidv4 } from 'uuid';
 import { ChatService } from './chat.service';
-import { forwardRef, Inject, Logger } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { AiService } from './ai/ai.service';
 import { PrismaService } from 'prisma/prisma.service';
 
 @WebSocketGateway({
-  cors: {
-    origin: true,
-    credentials: true,
-    methods: ['GET', 'POST'],
-  },
+  cors: { origin: true, credentials: true },
   namespace: '/chat',
-  transports: ['websocket', 'polling'],
-  allowEIO3: true,
-  pingTimeout: 60000,
-  pingInterval: 25000,
 })
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
-  @WebSocketServer()
-  server: Server;
-
+  @WebSocketServer() server: Server;
   private readonly logger = new Logger(ChatGateway.name);
+  private processingMessages = new Set<string>();
 
   constructor(
-    @Inject(forwardRef(() => ChatService))
     private readonly chatService: ChatService,
-    private readonly chatRedisService: ChatRedisService,
     private readonly aiService: AiService,
-    private readonly prisma: PrismaService,
+    private prisma: PrismaService,
   ) {}
 
   async handleConnection(client: Socket) {
     try {
-      const userId = client.handshake.auth.userId
-        ? parseInt(client.handshake.auth.userId)
-        : null;
-      const sessionId = client.handshake.auth.sessionId || uuidv4();
-      const isAdmin = client.handshake.auth.isAdmin === true || client.handshake.auth.isAdmin === 'true';
+      const userId = this.getUserId(client);
+      const sessionId = client.handshake.auth.sessionId || this.generateSessionId();
 
-      client.data.userId = userId;
-      client.data.sessionId = sessionId;
-      client.data.conversationId = null;
-      client.data.isAdmin = isAdmin;
-
-      this.logger.log(`Client connected: ${client.id}`, {
-        userId,
-        sessionId,
-        isAdmin,
-      });
-
-      if (isAdmin) {
-        client.join('admin-room');
-        this.logger.log(`Admin ${userId} joined admin-room`);
-      }
-
+      client.data = { userId, sessionId, conversationId: null };
+      
+      this.logger.log(`✅ Client connected: ${client.id}`, { userId, sessionId });
       client.emit('session-initialized', { sessionId });
       client.join(`session:${sessionId}`);
 
-      if (userId && !isAdmin) {
-        const result = await this.chatService.migrateMessagesToDb(sessionId, userId);
-        if ('conversationId' in result && result.conversationId) {
-          client.data.conversationId = result.conversationId;
-          client.join(`conversation:${result.conversationId}`);
-          client.emit('conversation-updated', { conversationId: result.conversationId });
-        }
-
-        await this.chatRedisService.setUserOnline(userId);
+      if (userId) {
+        await this.handleUserConnection(client, userId, sessionId);
       }
     } catch (error) {
-      this.logger.error('Error in handleConnection:', error);
+      this.logger.error('❌ Connection error:', error);
       client.emit('error', { message: 'Lỗi kết nối' });
     }
   }
 
   async handleDisconnect(client: Socket) {
-    this.logger.log(`Client disconnected: ${client.id}`);
-
-    if (client.data.isAdmin) {
-      client.leave('admin-room');
-    }
-
-    if (client.data.userId) {
-      await this.chatRedisService.setUserOffline(client.data.userId);
-    }
+    this.logger.log(`🔌 Client disconnected: ${client.id}`);
   }
+
+@SubscribeMessage('send:message')
+async handleSendMessage(
+  @MessageBody() data: { message: string; metadata?: any; conversationId?: number },
+  @ConnectedSocket() client: Socket,
+) {
+  const { userId, sessionId } = client.data;
+  const message = data.message?.trim();
+
+  // Validate
+  if (!this.validateMessage(message, client)) return;
+
+  // 🔥 Check duplicate
+  const messageKey = this.createMessageKey(
+    client.id, 
+    userId, 
+    sessionId, 
+    message,
+    data.conversationId
+  );
+  
+  if (this.processingMessages.has(messageKey)) {
+    this.logger.warn('🚫 DUPLICATE BLOCKED:', {
+      clientId: client.id,
+      userId,
+      message: message.substring(0, 30)
+    });
+    return;
+  }
+
+  this.processingMessages.add(messageKey);
+
+  try {
+    this.logger.log('💾 Processing message:', {
+      clientId: client.id,
+      userId,
+      message: message.substring(0, 50),
+      conversationId: data.conversationId
+    });
+
+    // Lưu message user - CHỈ 1 LẦN
+    const userMessage = await this.chatService.saveMessage({
+      userId,
+      sessionId,
+      message,
+      senderType: 'USER',
+      conversationId: data.conversationId,
+      metadata: data.metadata
+    }) as any;
+
+    this.logger.log('✅ User message saved:', {
+      messageId: userMessage.id,
+      conversationId: userMessage.conversationId
+    });
+
+    // Update conversationId
+    if (userMessage.conversationId && !client.data.conversationId) {
+      client.data.conversationId = userMessage.conversationId;
+      client.join(`conversation:${userMessage.conversationId}`);
+      client.emit('conversation:created', {
+        conversationId: userMessage.conversationId
+      });
+    }
+
+    // Emit user message
+    client.emit('message', userMessage);
+
+    // ✅ GỌI AI ĐỂ TẠO PHẢN HỒI - CHỈ GỌI 1 LẦN
+    await this.generateAIResponse(client, userMessage);
+
+  } catch (error) {
+    this.logger.error('❌ Send message error:', error);
+    client.emit('error', { 
+      message: 'Lỗi khi gửi tin nhắn',
+      details: error.message 
+    });
+  } finally {
+    setTimeout(() => {
+      this.processingMessages.delete(messageKey);
+    }, 5000);
+  }
+}
 
   @SubscribeMessage('user-login')
   async handleUserLogin(
@@ -103,64 +141,63 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const { userId } = payload;
+      if (!this.validateUserId(userId, client)) return;
 
-      if (!userId || userId <= 0) {
-        client.emit('error', { message: 'Invalid userId' });
-        return;
-      }
+      this.logger.log('👤 User login:', { userId, sessionId: client.data.sessionId });
 
       client.data.userId = userId;
-
-      if (!client.data.sessionId) {
-        client.data.sessionId = uuidv4();
-        this.logger.log(`Created new session for user ${userId}: ${client.data.sessionId}`);
-      }
-
-      client.data.senderType = 'USER';
-
-      const result = await this.chatService.migrateMessagesToDb(
-        client.data.sessionId,
-        userId
-      );
+      const result = await this.chatService.migrateToUser(client.data.sessionId, userId);
 
       if (result.conversationId) {
         client.data.conversationId = result.conversationId;
         client.join(`conversation:${result.conversationId}`);
-
-        const conversation = await this.chatService.getConversationById(result.conversationId);
-        client.emit('conversation-updated', conversation);
+        client.emit('conversation-updated', result);
+        
+        this.logger.log('✅ User migrated:', {
+          userId,
+          conversationId: result.conversationId
+        });
       }
-
-      await this.chatRedisService.setUserOnline(userId);
-      this.logger.log(`Guest session ${client.data.sessionId} migrated to user ${userId}`);
     } catch (error) {
-      this.logger.error('Error in handleUserLogin:', error);
-      client.emit('error', { message: 'Lỗi khi đăng nhập chat' });
+      this.logger.error('❌ Login error:', error);
+      client.emit('error', { message: 'Lỗi khi đăng nhập' });
     }
   }
 
-  @SubscribeMessage('admin-login')
-  async handleAdminLogin(
+  @SubscribeMessage('bot:message')
+  async handleBotMessage(
+    @MessageBody() data: { message: string; conversationId?: number; metadata?: any },
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { adminId: number }
   ) {
     try {
-      const { adminId } = payload;
+      const { userId, sessionId } = client.data;
+      const message = data.message?.trim();
 
-      if (!adminId || adminId <= 0) {
-        client.emit('error', { message: 'Invalid adminId' });
-        return;
-      }
+      if (!this.validateMessage(message, client)) return;
 
-      client.data.userId = adminId;
-      client.data.isAdmin = true;
-      client.join('admin-room');
+      this.logger.log('🤖 Saving bot message:', {
+        conversationId: data.conversationId,
+        messageLength: message.length
+      });
 
-      this.logger.log(`Admin ${adminId} logged in and joined admin-room`);
-      client.emit('admin-login-success', { adminId });
+      const botMessage = await this.chatService.saveMessage({
+        userId,
+        sessionId,
+        message,
+        senderType: 'BOT',
+        conversationId: data.conversationId,
+        metadata: { ...data.metadata, ai: true }
+      });
+
+      this.logger.log('✅ Bot message saved:', {
+        messageId: (botMessage as any).id
+      });
+
+      client.emit('message', botMessage);
+      
     } catch (error) {
-      this.logger.error('Error in handleAdminLogin:', error);
-      client.emit('error', { message: 'Lỗi khi đăng nhập admin' });
+      this.logger.error('❌ Bot message error:', error);
+      client.emit('error', { message: 'Lỗi khi gửi tin nhắn bot' });
     }
   }
 
@@ -169,241 +206,253 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() conversationId: number,
     @ConnectedSocket() client: Socket,
   ) {
-    if (!conversationId || conversationId <= 0) {
-      client.emit('error', { message: 'Invalid conversationId' });
-      return;
+    try {
+      if (!conversationId) return;
+
+      client.data.conversationId = conversationId;
+      client.join(`conversation:${conversationId}`);
+      
+      this.logger.log('👥 Joined conversation:', {
+        clientId: client.id,
+        conversationId
+      });
+    } catch (error) {
+      this.logger.error('❌ Join error:', error);
     }
-    client.join(`conversation:${conversationId}`);
-    client.data.conversationId = conversationId;
-    this.logger.log(`Client ${client.id} (userId: ${client.data.userId}, isAdmin: ${client.data.isAdmin}) joined conversation ${conversationId}`);
   }
 
-  @SubscribeMessage('leave:conversation')
-  async handleLeaveConversation(
-    @MessageBody() conversationId: number,
-    @ConnectedSocket() client: Socket,
-  ) {
-    if (!conversationId || conversationId <= 0) {
-      return;
-    }
-
-    client.leave(`conversation:${conversationId}`);
-    if (client.data.conversationId === conversationId) {
-      client.data.conversationId = null;
-    }
-    this.logger.log(`Client ${client.id} left conversation ${conversationId}`);
-  }
-
-  @SubscribeMessage('send:message')
-  async handleSendMessage(
-    @MessageBody() data: { message: string; conversationId?: number; metadata?: any; tempId?: string },
+  @SubscribeMessage('ai:generate')
+  async handleAIGenerate(
+    @MessageBody() data: { message: string; conversationId?: number },
     @ConnectedSocket() client: Socket,
   ) {
     try {
-      if (!data.message || typeof data.message !== 'string') {
-        client.emit('error', { message: 'Message is required' });
-        return;
-      }
+      const { userId, sessionId, conversationId } = client.data;
+      const message = data.message?.trim();
 
-      const trimmedMessage = data.message.trim();
-      if (trimmedMessage.length === 0) {
-        client.emit('error', { message: 'Message cannot be empty' });
-        return;
-      }
+      if (!this.validateMessage(message, client)) return;
 
-      if (trimmedMessage.length > 5000) {
-        client.emit('error', { message: 'Message too long (max 5000 characters)' });
-        return;
-      }
+      this.logger.log('🧠 Direct AI generation:', {
+        userId,
+        conversationId,
+        message: message.substring(0, 50)
+      });
 
-      const { userId, sessionId, conversationId: clientConversationId } = client.data;
-      let conversationId = data.conversationId || clientConversationId;
+      const conversationHistory = await this.getConversationHistory(
+        data.conversationId || conversationId,
+        userId,
+        sessionId
+      );
 
-      let conversation: any;
-      if (userId) {
-        this.logger.log(`USER logged in - userId: ${userId}, message: "${trimmedMessage}"`);
+      const aiReply = await this.aiService.generateReply([
+        ...conversationHistory,
+        { senderType: 'USER', message }
+      ]);
 
-        if (!conversationId) {
-          conversation = await this.chatService.getOrCreateConversation({ userId, sessionId });
-          conversationId = conversation.id;
-        }
-
-        const message = await this.chatService.saveUserMessage(
+      if (aiReply) {
+        const botMessage = await this.chatService.saveBotMessageForUser(
+          data.conversationId || conversationId,
+          aiReply,
           userId,
-          conversationId,
-          trimmedMessage,
-          sessionId,
-          data.metadata,
+          { ai: true, direct: true }
         );
 
-        if (data.tempId) (message as any).tempId = data.tempId;
+        client.emit('message', botMessage);
+      }
 
-        if (!client.data.conversationId && message.conversationId) {
-          client.data.conversationId = message.conversationId;
-          client.join(`conversation:${message.conversationId}`);
-          client.emit('conversation-updated', { conversationId: message.conversationId });
+    } catch (error) {
+      this.logger.error('❌ Direct AI generation error:', error);
+      client.emit('error', { message: 'Lỗi khi tạo phản hồi AI' });
+    }
+  }
+
+private async generateAIResponse(client: Socket, userMessage: any) {
+  try {
+    const { userId, sessionId } = client.data;
+    
+    // 🔥 THÊM: Kiểm tra xem đã có AI response cho message này chưa
+    const existingAIReply = await this.prisma.chatMessage.findFirst({
+      where: {
+        conversationId: userMessage.conversationId,
+        senderType: 'BOT',
+        metadata: {
+          path: ['responseTo'],
+          equals: userMessage.id
         }
+      }
+    });
 
-        this.server.to(`conversation:${message.conversationId}`).emit('message', message);
-        this.server.to('admin-room').emit('new-user-message', {
-          conversationId: message.conversationId,
-          userId,
-          message,
-        });
+    if (existingAIReply) {
+      this.logger.warn('🚫 AI response already exists for this message, skipping:', {
+        userMessageId: userMessage.id,
+        existingAIReplyId: existingAIReply.id
+      });
+      return;
+    }
+
+    this.logger.log('🤖 Generating AI response...', {
+      conversationId: userMessage.conversationId,
+      userMessageId: userMessage.id
+    });
+
+    const conversationHistory = await this.getConversationHistory(
+      userMessage.conversationId,
+      userId,
+      sessionId
+    );
+
+    const aiReply = await this.aiService.generateReply(conversationHistory, {
+      model: 'gpt-4o-mini',
+      systemPrompt: 'Bạn là chuyên gia chứng khoán Việt Nam. Hãy trả lời ngắn gọn, chính xác và chuyên nghiệp về thị trường chứng khoán, cổ phiếu, phân tích kỹ thuật, và đầu tư. Ưu tiên thông tin về VN-Index, HNX, Upcom, và các cổ phiếu blue-chip.',
+      temperature: 0.7,
+      maxTokens: 800,
+    });
+
+    if (!aiReply) {
+      this.logger.warn('❌ AI returned empty response');
+      return;
+    }
+
+    this.logger.log('✅ AI response generated:', {
+      length: aiReply.length,
+      preview: aiReply.substring(0, 100)
+    });
+
+    // 🔥 THÊM: Kiểm tra lại một lần nữa trước khi lưu (race condition protection)
+    const finalCheck = await this.prisma.chatMessage.findFirst({
+      where: {
+        conversationId: userMessage.conversationId,
+        senderType: 'BOT', 
+        metadata: {
+          path: ['responseTo'],
+          equals: userMessage.id
+        }
+      }
+    });
+
+    if (finalCheck) {
+      this.logger.warn('🚫 Duplicate AI response detected in final check, skipping');
+      return;
+    }
+
+    const botMessage = await this.chatService.saveBotMessageForUser(
+      userMessage.conversationId,
+      aiReply,
+      userId,
+      { ai: true, responseTo: userMessage.id }
+    );
+
+    client.emit('message', botMessage);
+    this.logger.log('✅ AI message sent to client');
+
+  } catch (error) {
+    this.logger.error('❌ AI response error:', error);
+    
+    const errorMessage = await this.chatService.saveBotMessageForUser(
+      userMessage.conversationId,
+      'Xin lỗi, tôi đang gặp sự cố kỹ thuật. Vui lòng thử lại sau.',
+      client.data.userId,
+      { error: true, originalError: error.message }
+    );
+    
+    client.emit('message', errorMessage);
+  }
+}
+
+  private async getConversationHistory(
+    conversationId: number | null,
+    userId: number | null,
+    sessionId: string
+  ): Promise<{ senderType: string; message: string }[]> {
+    try {
+      let messages: any[] = [];
+
+      if (conversationId) {
+        messages = await this.chatService.getConversationMessages(conversationId);
+      } else if (userId) {
+        const conversations = await this.chatService.getUserConversations(userId);
+        if (conversations.length > 0) {
+          const latestConversation = conversations[0];
+          messages = latestConversation.messages || [];
+        }
       } else {
-        this.logger.log(`GUEST - sessionId: ${sessionId}, message: "${trimmedMessage}"`);
+        messages = await this.chatService.getSessionMessages(sessionId);
+      }
 
-        const guestMessage = await this.chatService.saveGuestMessage(sessionId, trimmedMessage, data.metadata);
-        if (data.tempId) (guestMessage as any).tempId = data.tempId;
+      return messages
+        .slice(-10)
+        .map(msg => ({
+          senderType: msg.senderType,
+          message: msg.message
+        }));
 
-        if (!client.rooms.has(`session:${sessionId}`)) client.join(`session:${sessionId}`);
+    } catch (error) {
+      this.logger.error('❌ Error getting conversation history:', error);
+      return [];
+    }
+  }
 
-        this.server.to(`session:${sessionId}`).emit('message', guestMessage);
-        this.server.to('admin-room').emit('new-guest-message', {
-          sessionId,
-          message: guestMessage,
+  private async handleUserConnection(client: Socket, userId: number, sessionId: string) {
+    try {
+      const result = await this.chatService.migrateToUser(sessionId, userId);
+      if (result.conversationId) {
+        client.data.conversationId = result.conversationId;
+        client.join(`conversation:${result.conversationId}`);
+        client.emit('conversation-updated', { conversationId: result.conversationId });
+        
+        this.logger.log('✅ Auto-migrated:', {
+          userId,
+          conversationId: result.conversationId
         });
       }
-
-      // AI Auto Reply (Global – không cần tenant)
-      try {
-        const delayMs = 800; // Default delay
-        await new Promise(r => setTimeout(r, delayMs));
-
-        let conversationHistory: { senderType: string; message: string }[] = [];
-
-        if (userId && conversationId) {
-          conversationHistory = await this.prisma.chatMessage.findMany({
-            where: { conversationId },
-            orderBy: { createdAt: 'asc' },
-            select: { senderType: true, message: true },
-          });
-        }
-
-        const aiReply = await this.aiService.generateReply(conversationHistory);
-
-        if (aiReply?.trim().length) {
-          const botMessage = userId
-            ? await this.chatService.saveBotMessageForUser(conversationId!, aiReply, userId)
-            : await this.chatService.saveBotMessage(sessionId, aiReply);
-
-          const room = userId ? `conversation:${conversationId}` : `session:${sessionId}`;
-          this.server.to(room).emit('message', botMessage);
-          this.logger.log(`AI replied and emitted to ${room}: ${aiReply}`);
-        }
-      } catch (aiErr) {
-        this.logger.error('AI auto reply error:', aiErr);
-      }
-
     } catch (error) {
-      this.logger.error('Error sending message:', error);
-      client.emit('error', { message: 'Lỗi khi gửi tin nhắn' });
+      this.logger.error('❌ Auto-migration error:', error);
     }
   }
 
-  @SubscribeMessage('admin:send-message')
-  async handleAdminSendMessage(
-    @MessageBody() data: {
-      conversationId?: number;
-      sessionId?: string;
-      message: string;
-      metadata?: any;
-      tempId?: string;
-    },
-    @ConnectedSocket() client: Socket,
-  ) {
-    try {
-      if (!client.data.isAdmin) {
-        client.emit('error', { message: 'Unauthorized: Admin only' });
-        return;
-      }
-
-      if (!data.conversationId && !data.sessionId) {
-        client.emit('error', { message: 'conversationId or sessionId is required' });
-        return;
-      }
-
-      if (!data.message || data.message.trim().length === 0) {
-        client.emit('error', { message: 'Message cannot be empty' });
-        return;
-      }
-
-      const { userId: adminId } = client.data;
-      const trimmedMessage = data.message.trim();
-
-      if (data.conversationId) {
-        this.logger.log(`ADMIN ${adminId} sending message to conversation ${data.conversationId}`);
-
-        const message = await this.chatService.saveAdminMessage(
-          adminId,
-          data.conversationId,
-          trimmedMessage,
-          data.metadata,
-        );
-
-        if (data.tempId) {
-          (message as any).tempId = data.tempId;
-        }
-
-        this.server.to(`conversation:${data.conversationId}`).emit('message', message);
-        this.logger.log(`Admin message sent to conversation ${data.conversationId}`);
-        return;
-      }
-
-      if (data.sessionId) {
-        this.logger.log(`ADMIN ${adminId} sending message to guest session ${data.sessionId}`);
-
-        const adminMessage = await this.chatService.saveAdminMessageToGuest(
-          adminId,
-          data.sessionId,
-          trimmedMessage,
-          data.metadata,
-        );
-
-        client.emit('message', adminMessage);
-        this.server.to(`session:${data.sessionId}`).emit('message', adminMessage);
-
-        this.logger.log(`Admin message sent to guest session ${data.sessionId}`);
-      }
-    } catch (error) {
-      this.logger.error('Error in admin send message:', error);
-      client.emit('error', { message: 'Lỗi khi gửi tin nhắn admin' });
-    }
+  private createMessageKey(
+    clientId: string,
+    userId: number | null, 
+    sessionId: string, 
+    message: string,
+    conversationId?: number
+  ): string {
+    const parts = [
+      clientId,
+      userId || 'guest',
+      sessionId,
+      conversationId || 'new',
+      message.substring(0, 100)
+    ];
+    return parts.join('|||');
   }
 
-  @SubscribeMessage('typing:start')
-  async handleTypingStart(
-    @MessageBody() data: { conversationId?: number },
-    @ConnectedSocket() client: Socket,
-  ) {
-    const { userId, conversationId: clientConversationId, isAdmin } = client.data;
-    const conversationId = data.conversationId || clientConversationId;
-
-    if (userId && conversationId) {
-      await this.chatRedisService.setTyping(conversationId, userId, true);
-      client.to(`conversation:${conversationId}`).emit('typing', {
-        userId,
-        isTyping: true,
-        isAdmin,
-      });
+  private validateMessage(message: string, client: Socket): boolean {
+    if (!message) {
+      client.emit('error', { message: 'Tin nhắn không được để trống' });
+      return false;
     }
+    if (message.length > 5000) {
+      client.emit('error', { message: 'Tin nhắn quá dài (tối đa 5000 ký tự)' });
+      return false;
+    }
+    return true;
   }
 
-  @SubscribeMessage('typing:stop')
-  async handleTypingStop(
-    @MessageBody() data: { conversationId?: number },
-    @ConnectedSocket() client: Socket,
-  ) {
-    const { userId, conversationId: clientConversationId, isAdmin } = client.data;
-    const conversationId = data.conversationId || clientConversationId;
-
-    if (userId && conversationId) {
-      await this.chatRedisService.setTyping(conversationId, userId, false);
-      client.to(`conversation:${conversationId}`).emit('typing', {
-        userId,
-        isTyping: false,
-        isAdmin,
-      });
+  private validateUserId(userId: number, client: Socket): boolean {
+    if (!userId || userId <= 0) {
+      client.emit('error', { message: 'User ID không hợp lệ' });
+      return false;
     }
+    return true;
+  }
+
+  private getUserId(client: Socket): number | null {
+    const userId = client.handshake.auth.userId;
+    return userId ? parseInt(userId) : null;
+  }
+
+  private generateSessionId(): string {
+    return `${Math.random().toString(36).substring(2)}-${Date.now()}-${Math.random().toString(36).substring(2)}`;
   }
 }

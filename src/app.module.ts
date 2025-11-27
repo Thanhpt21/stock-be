@@ -20,6 +20,9 @@ import { PortfolioSnapshotModule } from './modules/portfolio-snapshot/portfolio-
 import { TradingAccountModule } from './modules/trading-account/trading-account.module';
 import { OrderModule } from './modules/order/order.module';
 import { PositionModule } from './modules/position/position.module';
+import { MarketDepthModule } from './modules/market-depth/market-depth.module';
+import { TechnicalIndicatorsModule } from './modules/technical-indicators/technical-indicators.module';
+import { ChatGateway } from './modules/chat/chat.gateway';
 
 
 @Module({
@@ -45,9 +48,11 @@ import { PositionModule } from './modules/position/position.module';
     PortfolioSnapshotModule,
     TradingAccountModule,
     OrderModule,
-    PositionModule
+    PositionModule,
+    MarketDepthModule,
+    TechnicalIndicatorsModule
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, ChatGateway],
 })
 export class AppModule {}

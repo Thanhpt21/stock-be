@@ -1,325 +1,229 @@
-import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
-import { ChatRedisService, ChatMessageRedis } from './redis/chat-redis.service';
-import { v4 as uuidv4 } from 'uuid';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from 'prisma/prisma.service';
-import { ChatConversation } from '@prisma/client';
-import { AiService } from './ai/ai.service';
-import { ChatGateway } from './chat.gateway';
+import { ChatRedisService } from './redis/chat-redis.service';
+
+interface SaveMessageParams {
+  userId?: number | null;
+  sessionId: string;
+  message: string;
+  senderType: 'USER' | 'BOT';
+  conversationId?: number;
+  metadata?: any;
+}
 
 @Injectable()
 export class ChatService {
   private readonly logger = new Logger(ChatService.name);
+  private messageCache = new Map<string, { timestamp: number; messageId: any }>();
 
   constructor(
     private prisma: PrismaService,
     private chatRedisService: ChatRedisService,
-    private aiService: AiService,
-    @Inject(forwardRef(() => ChatGateway))
-    private chatGateway: ChatGateway,
-  ) {}
+  ) {
+    setInterval(() => {
+      const now = Date.now();
+      for (const [key, value] of this.messageCache.entries()) {
+        if (now - value.timestamp > 3000) {
+          this.messageCache.delete(key);
+        }
+      }
+    }, 5000);
+  }
 
-  /**
-   * Migrate messages từ guest session (Redis) sang user conversation (DB)
-   */
-  async migrateMessagesToDb(sessionId: string, userId: number) {
+  async saveMessage(params: SaveMessageParams) {
+    const { userId, sessionId, message, senderType, conversationId, metadata } = params;
+
+    const cacheKey = this.createMessageCacheKey(userId, sessionId, message, senderType);
+    const cached = this.messageCache.get(cacheKey);
+    
+    if (cached && (Date.now() - cached.timestamp) < 3000) {
+      this.logger.warn('🚫 Duplicate message detected in cache, returning cached:', {
+        cacheKey: cacheKey.substring(0, 50),
+        messageId: cached.messageId
+      });
+      return cached.messageId;
+    }
+
+    const cleanMetadata = { ...metadata };
+    delete cleanMetadata.tempId;
+
+    let savedMessage;
+
+    if (userId) {
+      savedMessage = await this.saveToDatabase({
+        userId,
+        sessionId,
+        message,
+        senderType,
+        conversationId,
+        metadata: cleanMetadata
+      });
+    } else {
+      savedMessage = await this.saveToRedis({
+        sessionId,
+        message,
+        senderType,
+        metadata: cleanMetadata
+      });
+    }
+
+    this.messageCache.set(cacheKey, {
+      timestamp: Date.now(),
+      messageId: savedMessage
+    });
+
+    return savedMessage;
+  }
+
+async saveBotMessageForUser(
+  conversationId: number,
+  message: string,
+  userId?: number,
+  metadata?: any,
+) {
+  try {
+    const trimmed = message?.trim();
+    if (!trimmed) throw new Error('Bot message cannot be empty');
+
+    // 🔥 THÊM: Kiểm tra duplicate dựa trên responseTo
+    if (metadata?.responseTo) {
+      const existingReply = await this.prisma.chatMessage.findFirst({
+        where: {
+          conversationId,
+          senderType: 'BOT',
+          metadata: {
+            path: ['responseTo'],
+            equals: metadata.responseTo
+          }
+        }
+      });
+
+      if (existingReply) {
+        this.logger.warn('🚫 Bot reply already exists for this user message:', {
+          responseTo: metadata.responseTo,
+          existingId: existingReply.id
+        });
+        return existingReply;
+      }
+    }
+
+    const cleanMetadata = { ...metadata };
+    delete cleanMetadata.tempId;
+
+    const botMessage = await this.prisma.chatMessage.create({
+      data: {
+        conversationId,
+        senderId: userId ?? null,
+        senderType: 'BOT',
+        message: trimmed,
+        metadata: { ...cleanMetadata, ai: true },
+      },
+    });
+
+    await this.prisma.chatConversation.update({
+      where: { id: conversationId },
+      data: { updatedAt: new Date() },
+    });
+
+    this.logger.log('✅ Bot message saved:', {
+      messageId: botMessage.id,
+      conversationId
+    });
+
+    return botMessage;
+  } catch (error) {
+    this.logger.error('❌ Error saving bot message:', error);
+    throw error;
+  }
+}
+
+  async migrateToUser(sessionId: string, userId: number) {
     try {
+      this.logger.log('🔄 Starting migration:', { sessionId, userId });
+
       const sessionMessages = await this.chatRedisService.getSessionMessages(sessionId);
 
       if (!sessionMessages.length) {
-        this.logger.log(`No messages to migrate for session ${sessionId}`);
+        this.logger.log('📭 No messages to migrate');
         return { message: 'No messages to migrate' };
       }
 
-      const existingConversation = await this.prisma.chatConversation.findFirst({
-        where: { userId, sessionId },
-      });
-
-      if (existingConversation) {
-        this.logger.log(`Session ${sessionId} already migrated to conversation ${existingConversation.id}`);
-        return { conversationId: existingConversation.id };
-      }
-
-      const result = await this.prisma.$transaction(async (tx) => {
-        const conversation = await tx.chatConversation.create({
-          data: {
-            userId,
-            sessionId,
-            status: 'ACTIVE',
-          },
-        });
-
-        const messagesData = sessionMessages.map(msg => ({
-          conversationId: conversation.id,
-          senderId: msg.senderId || null,
-          senderType: msg.senderType,
-          sessionId,
-          message: msg.message,
-          metadata: msg.metadata || null,
-          createdAt: new Date(msg.createdAt),
-        }));
-
-        await tx.chatMessage.createMany({ data: messagesData });
-
-        this.logger.log(`Migrated ${messagesData.length} messages from session ${sessionId} to conversation ${conversation.id}`);
-
-        return { conversationId: conversation.id };
-      });
-
-      await this.chatRedisService.clearSessionMessages(sessionId);
-
-      return result;
-    } catch (error) {
-      this.logger.error(`Error migrating messages for session ${sessionId}:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Lấy hoặc tạo conversation cho user
-   */
-  async getOrCreateConversation(params: { 
-    userId: number; 
-    sessionId?: string | null;
-  }): Promise<ChatConversation> {
-    const { userId, sessionId } = params;
-
-    try {
       let conversation = await this.prisma.chatConversation.findFirst({
-        where: { userId, status: 'ACTIVE' },
-        orderBy: { updatedAt: 'desc' },
-        include: { messages: true },
+        where: { userId, sessionId },
       });
 
       if (!conversation) {
         conversation = await this.prisma.chatConversation.create({
-          data: {
-            userId,
-            sessionId,
-            status: 'ACTIVE',
-          },
-          include: { messages: true },
+          data: { userId, sessionId, status: 'ACTIVE' },
         });
-
-        this.logger.log(`Created new conversation ${conversation.id} for user ${userId}`);
-      } else if (sessionId && !conversation.sessionId) {
-        conversation = await this.prisma.chatConversation.update({
-          where: { id: conversation.id },
-          data: { sessionId },
-          include: { messages: true },
-        });
+        this.logger.log('✅ Conversation created:', { conversationId: conversation.id });
       }
 
-      return conversation;
+      if (sessionMessages.length > 0) {
+        await this.migrateMessagesToDb(sessionMessages, conversation.id, sessionId);
+        await this.chatRedisService.clearSessionMessages(sessionId);
+        this.logger.log('✅ Messages migrated:', { count: sessionMessages.length });
+      }
+
+      return { conversationId: conversation.id };
     } catch (error) {
-      this.logger.error(`Error in getOrCreateConversation for user ${userId}:`, error);
+      this.logger.error('❌ Migration error:', error);
       throw error;
     }
   }
 
-  /**
-   * Lưu tin nhắn của guest (chưa login) vào Redis
-   */
-  async saveGuestMessage(
-    sessionId: string,
-    message: string,
-    metadata?: any,
-  ): Promise<ChatMessageRedis> {
-    try {
-      if (!sessionId) {
-        sessionId = uuidv4();
-      }
-
-      if (!message || message.trim().length === 0) {
-        throw new Error('Message cannot be empty');
-      }
-
-      const guestMessage: ChatMessageRedis = {
-        id: uuidv4(),
-        sessionId,
-        senderId: undefined,
-        senderType: 'GUEST',
-        message: message.trim(),
-        metadata,
-        createdAt: new Date().toISOString(),
-      };
-
-      await this.chatRedisService.saveSessionMessage(sessionId, guestMessage);
-      this.logger.log(`Saved guest message for session ${sessionId}`);
-
-      return guestMessage;
-    } catch (error) {
-      this.logger.error(`Error saving guest message:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Lưu tin nhắn bot vào Redis (cho guest)
-   */
-  async saveBotMessage(
-    sessionId: string,
-    message: string,
-  ): Promise<ChatMessageRedis> {
-    try {
-      const botMessage: ChatMessageRedis = {
-        id: uuidv4(),
-        sessionId,
-        senderId: undefined,
-        senderType: 'BOT',
-        message: message.trim(),
-        metadata: null,
-        createdAt: new Date().toISOString(),
-      };
-
-      await this.chatRedisService.saveSessionMessage(sessionId, botMessage);
-      this.logger.log(`Saved bot message for session ${sessionId}`);
-
-      return botMessage;
-    } catch (error) {
-      this.logger.error(`Error saving bot message:`, error);
-      throw error;
-    }
-  }
-
-  async saveBotMessageForUser(
-    conversationId: number,
-    message: string,
-    userId?: number,
-    metadata?: any,
-  ) {
-    try {
-      const trimmed = message?.trim();
-      if (!trimmed) throw new Error('Bot message cannot be empty');
-
-      const botMessage = await this.prisma.chatMessage.create({
-        data: {
-          conversationId,
-          senderId: userId ?? null,
-          senderType: 'BOT',
-          message: trimmed,
-          metadata: { ...metadata, ai: true },
-        },
-      });
-
-      this.logger.log(`Bot message ${botMessage.id} saved in conversation ${conversationId}`);
-
-      try {
-        this.chatGateway.server
-          .to(`conversation:${conversationId}`)
-          .emit('receive:message', botMessage);
-
-        this.logger.log(`Bot message emitted to conversation:${conversationId}`);
-      } catch (emitErr) {
-        this.logger.warn('Failed to emit bot message:', emitErr);
-      }
-
-      return botMessage;
-    } catch (error) {
-      this.logger.error('Error saving bot message:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Lưu tin nhắn của user (đã login) vào DB
-   */
-  async saveUserMessage(
-    userId: number,
-    conversationId: number | undefined,
-    message: string,
-    sessionId: string,
-    metadata?: any,
-  ) {
-    try {
-      const trimmed = message?.trim();
-      if (!trimmed) throw new Error('Message cannot be empty');
-      if (trimmed.length > 5000) throw new Error('Message too long (max 5000 chars)');
-
-      let conversation = conversationId
-        ? await this.prisma.chatConversation.findUnique({ where: { id: conversationId } })
-        : null;
-
-      if (!conversation && userId) {
-        conversation = await this.getOrCreateConversation({
-          userId,
-          sessionId,
-        });
-      }
-
-      if (!conversation) throw new Error('Cannot create or find conversation');
-
-      const dbMessage = await this.prisma.$transaction(async (tx) => {
-        const msg = await tx.chatMessage.create({
-          data: {
-            conversationId: conversation.id,
-            senderId: userId,
-            senderType: 'USER',
-            message: trimmed,
-            metadata,
-            sessionId,
-          },
-        });
-
-        await tx.chatConversation.update({
-          where: { id: conversation.id },
-          data: { updatedAt: new Date() },
-        });
-
-        this.logger.log(`User message ${msg.id} saved in conversation ${conversation.id}`);
-        return msg;
-      });
-
-      return dbMessage;
-    } catch (error) {
-      this.logger.error('Error saving user message:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Lấy lịch sử chat từ DB
-   */
   async getConversationMessages(conversationId: number) {
     try {
-      const id = parseInt(conversationId.toString(), 10);
-      if (isNaN(id)) {
-        throw new Error(`Invalid conversationId: ${conversationId}`);
-      }
-      return await this.prisma.chatMessage.findMany({
-        where: { conversationId: id },
+      const messages = await this.prisma.chatMessage.findMany({
+        where: { conversationId },
         orderBy: { createdAt: 'asc' },
         include: {
           conversation: {
             include: {
-              user: {
-                select: { id: true, name: true, avatar: true },
-              },
+              user: { select: { id: true, name: true, avatar: true } },
             },
           },
         },
       });
+
+      this.logger.log('📨 Fetched conversation messages:', {
+        conversationId,
+        count: messages.length
+      });
+
+      return messages;
     } catch (error) {
-      this.logger.error(`Error getting conversation messages for ${conversationId}:`, error);
+      this.logger.error(`❌ Error getting conversation messages:`, error);
       throw error;
     }
   }
 
-  /**
-   * Lấy messages từ Redis (guest)
-   */
   async getSessionMessages(sessionId: string) {
     try {
       return await this.chatRedisService.getSessionMessages(sessionId);
     } catch (error) {
-      this.logger.error(`Error getting session messages for ${sessionId}:`, error);
+      this.logger.error(`❌ Error getting session messages:`, error);
       throw error;
     }
   }
 
-  /**
-   * Lấy conversation theo id
-   */
-  async getConversationById(conversationId: number): Promise<ChatConversation | null> {
+  async getUserConversations(userId: number) {
+    try {
+      return await this.prisma.chatConversation.findMany({
+        where: { userId },
+        orderBy: { updatedAt: 'desc' },
+        include: {
+          messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+          user: { select: { id: true, name: true, avatar: true } },
+        },
+      });
+    } catch (error) {
+      this.logger.error(`❌ Error getting user conversations:`, error);
+      throw error;
+    }
+  }
+
+  async getConversationById(conversationId: number) {
     try {
       return await this.prisma.chatConversation.findUnique({
         where: { id: conversationId },
@@ -329,36 +233,26 @@ export class ChatService {
         },
       });
     } catch (error) {
-      this.logger.error(`Error getting conversation ${conversationId}:`, error);
+      this.logger.error(`❌ Error getting conversation:`, error);
       throw error;
     }
   }
 
-  /**
-   * Lấy danh sách conversations của user
-   */
-  async getUserConversations(userId: number) {
+  async getConversationIdsByUserId(userId: number): Promise<number[]> {
     try {
-      return await this.prisma.chatConversation.findMany({
-        where: { userId },
+      const conversations = await this.prisma.chatConversation.findMany({
+        where: { userId, status: 'ACTIVE' },
+        select: { id: true },
         orderBy: { updatedAt: 'desc' },
-        include: {
-          messages: {
-            orderBy: { createdAt: 'desc' },
-            take: 1,
-          },
-          user: { select: { id: true, name: true, avatar: true } },
-        },
       });
+
+      return conversations.map(c => c.id);
     } catch (error) {
-      this.logger.error(`Error getting user conversations for user ${userId}:`, error);
+      this.logger.error(`❌ Error getting conversationIds:`, error);
       throw error;
     }
   }
 
-  /**
-   * Lấy các tin nhắn của guest trước khi login
-   */
   async getGuestMessagesBeforeLogin(sessionId: string) {
     try {
       let conversations = await this.prisma.chatConversation.findMany({
@@ -399,339 +293,171 @@ export class ChatService {
 
       return conversations;
     } catch (error) {
-      this.logger.error(`Error getting guest messages for session ${sessionId}:`, error);
+      this.logger.error(`❌ Error getting guest messages:`, error);
       throw error;
     }
   }
 
-  /**
-   * Lấy tất cả các conversations (dành cho admin)
-   */
-  async getAllConversations(params?: {
-    status?: string;
-    skip?: number;
-    take?: number;
-  }): Promise<any> {
-    try {
-      const { status, skip = 0, take = 20 } = params || {};
-      const where: any = {};
-      if (status) where.status = status;
-
-      const [conversations, total] = await Promise.all([
-        this.prisma.chatConversation.findMany({
-          where,
-          skip,
-          take,
-          orderBy: { updatedAt: 'desc' },
-          include: {
-            user: { select: { id: true, name: true, avatar: true } },
-            messages: {
-              orderBy: { createdAt: 'desc' },
-              take: 1,
-              select: {
-                id: true,
-                senderId: true,
-                senderType: true,
-                message: true,
-                createdAt: true,
-                isRead: true,
-              },
-            },
-            _count: {
-              select: {
-                messages: {
-                  where: { isRead: false, senderType: 'USER' },
-                },
-              },
-            },
-          },
-        }),
-        this.prisma.chatConversation.count({ where }),
-      ]);
-
-      return {
-        conversations,
-        pagination: {
-          total,
-          page: Math.floor(skip / take) + 1,
-          limit: take,
-          totalPages: Math.ceil(total / take),
-        },
-      };
-    } catch (error) {
-      this.logger.error('Error getting all conversations:', error);
-      throw error;
-    }
-  }
-
-  async closeConversation(conversationId: number) {
-    try {
-      return await this.prisma.chatConversation.update({
-        where: { id: conversationId },
-        data: { status: 'CLOSED', updatedAt: new Date() },
-      });
-    } catch (error) {
-      this.logger.error(`Error closing conversation ${conversationId}:`, error);
-      throw error;
-    }
-  }
-
-  async reopenConversation(conversationId: number) {
-    try {
-      return await this.prisma.chatConversation.update({
-        where: { id: conversationId },
-        data: { status: 'ACTIVE', updatedAt: new Date() },
-      });
-    } catch (error) {
-      this.logger.error(`Error reopening conversation ${conversationId}:`, error);
-      throw error;
-    }
-  }
-
-async assignConversation(conversationId: number, adminId: number) {
-  try {
-    return await this.prisma.chatConversation.update({
-      where: { id: conversationId },
-      data: { 
-        // Sử dụng userId thay vì assignedAdminId
-        userId: adminId, 
-        updatedAt: new Date() 
-      },
-      include: {
-        user: { select: { id: true, name: true, avatar: true } },
-      },
-    });
-  } catch (error) {
-    this.logger.error(`Error assigning conversation ${conversationId}:`, error);
-    throw error;
-  }
-}
-
-async getAdminConversations(adminId: number) {
-  try {
-    return await this.prisma.chatConversation.findMany({
-      where: { 
-        // Sử dụng userId thay vì assignedAdminId
-        userId: adminId 
-      },
-      orderBy: { updatedAt: 'desc' },
-      include: {
-        user: { select: { id: true, name: true, avatar: true } },
-        messages: { orderBy: { createdAt: 'desc' }, take: 1 },
-        _count: {
-          select: {
-            messages: {
-              where: { isRead: false, senderType: 'USER' },
-            },
-          },
-        },
-      },
-    });
-  } catch (error) {
-    this.logger.error(`Error getting admin conversations for admin ${adminId}:`, error);
-    throw error;
-  }
-}
-  async searchConversations(keyword: string) {
-    try {
-      const where: any = {
-        OR: [
-          { user: { name: { contains: keyword, mode: 'insensitive' } } },
-          { messages: { some: { message: { contains: keyword, mode: 'insensitive' } } } },
-        ],
-      };
-
-      return await this.prisma.chatConversation.findMany({
-        where,
-        orderBy: { updatedAt: 'desc' },
-        take: 50,
-        include: {
-          user: { select: { id: true, name: true, avatar: true } },
-          messages: { orderBy: { createdAt: 'desc' }, take: 1 },
-        },
-      });
-    } catch (error) {
-      this.logger.error('Error searching conversations:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get conversation statistics
-   */
-  async getConversationStats() {
-    try {
-      const [
-        totalConversations,
-        activeConversations,
-        closedConversations,
-        totalMessages,
-        unreadMessages,
-        todayConversations,
-      ] = await Promise.all([
-        this.prisma.chatConversation.count(),
-        this.prisma.chatConversation.count({ where: { status: 'ACTIVE' } }),
-        this.prisma.chatConversation.count({ where: { status: 'CLOSED' } }),
-        this.prisma.chatMessage.count(),
-        this.prisma.chatMessage.count({
-          where: { isRead: false, senderType: 'USER' },
-        }),
-        this.prisma.chatConversation.count({
-          where: {
-            createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-          },
-        }),
-      ]);
-
-      return {
-        totalConversations,
-        activeConversations,
-        closedConversations,
-        totalMessages,
-        unreadMessages,
-        todayConversations,
-      };
-    } catch (error) {
-      this.logger.error('Error getting conversation stats:', error);
-      throw error;
-    }
-  }
-
-  async saveAdminMessageToGuest(
-    adminId: number,
-    sessionId: string,
+  private createMessageCacheKey(
+    userId: number | null | undefined,
+    sessionId: string | null,
     message: string,
-    metadata?: any,
-  ): Promise<ChatMessageRedis> {
-    try {
-      if (!message || message.trim().length === 0) {
-        throw new Error('Message cannot be empty');
-      }
+    senderType: string
+  ): string {
+    const userPart = userId || sessionId || 'anonymous';
+    const messagePart = message.substring(0, 100);
+    return `${userPart}-${senderType}-${messagePart}`;
+  }
 
-      if (message.length > 5000) {
-        throw new Error('Message too long (max 5000 characters)');
-      }
+  private async saveToDatabase(params: SaveMessageParams & { userId: number }) {
+    const { userId, sessionId, message, senderType, conversationId, metadata } = params;
 
-      const adminMessage: ChatMessageRedis = {
-        id: uuidv4(),
-        sessionId,
-        senderId: adminId,
-        senderType: 'ADMIN',
+    this.logger.log('💾 Saving to database:', {
+      userId,
+      senderType,
+      conversationId,
+      messageLength: message.length
+    });
+
+    const conversation = conversationId 
+      ? await this.prisma.chatConversation.findUnique({ where: { id: conversationId } })
+      : await this.getOrCreateConversation(userId, sessionId);
+
+    if (!conversation) {
+      throw new Error('Cannot create or find conversation');
+    }
+
+    const recentDuplicate = await this.prisma.chatMessage.findFirst({
+      where: {
+        conversationId: conversation.id,
+        senderType,
+        senderId: senderType === 'USER' ? userId : null,
+        message: message.trim(),
+        createdAt: {
+          gte: new Date(Date.now() - 10000)
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (recentDuplicate) {
+      this.logger.warn('🚫 DUPLICATE FOUND IN DATABASE:', {
+        existingId: recentDuplicate.id,
+        conversationId: conversation.id,
+        message: message.substring(0, 30)
+      });
+      
+      return { ...recentDuplicate, conversationId: conversation.id };
+    }
+
+    const dbMessage = await this.prisma.chatMessage.create({
+      data: {
+        conversationId: conversation.id,
+        senderId: senderType === 'USER' ? userId : null,
+        senderType,
         message: message.trim(),
         metadata,
-        createdAt: new Date().toISOString(),
-      };
+        sessionId,
+      },
+    });
 
-      await this.chatRedisService.saveSessionMessage(sessionId, adminMessage);
-      this.logger.log(`Admin ${adminId} sent message to guest session ${sessionId}`);
+    await this.prisma.chatConversation.update({
+      where: { id: conversation.id },
+      data: { updatedAt: new Date() },
+    });
 
-      return adminMessage;
-    } catch (error) {
-      this.logger.error(`Error saving admin message to guest:`, error);
-      throw error;
-    }
+    this.logger.log('✅ NEW MESSAGE SAVED:', {
+      messageId: dbMessage.id,
+      conversationId: conversation.id
+    });
+
+    return { ...dbMessage, conversationId: conversation.id };
   }
 
-  async saveAdminMessage(
-    adminId: number,
-    conversationId: number,
-    message: string,
-    metadata?: any,
-  ) {
-    try {
-      if (!message || message.trim().length === 0) {
-        throw new Error('Message cannot be empty');
-      }
+  private async saveToRedis(params: Omit<SaveMessageParams, 'userId' | 'conversationId'>) {
+    const { sessionId, message, senderType, metadata } = params;
 
-      if (message.length > 5000) {
-        throw new Error('Message too long (max 5000 characters)');
-      }
+    this.logger.log('💾 Saving to Redis:', {
+      sessionId,
+      senderType,
+      messageLength: message.length
+    });
 
-      const conversation = await this.prisma.chatConversation.findUnique({
-        where: { id: conversationId },
-      });
+    const redisMessage = {
+      id: this.generateMessageId(),
+      sessionId,
+      senderId: null,
+      senderType,
+      message: message.trim(),
+      metadata,
+      createdAt: new Date().toISOString(),
+    };
 
-      if (!conversation) {
-        throw new Error('Conversation not found');
-      }
+    await this.chatRedisService.saveSessionMessage(sessionId, redisMessage);
+    
+    this.logger.log('✅ Message saved to Redis:', {
+      messageId: redisMessage.id
+    });
 
-      return await this.prisma.$transaction(async (tx) => {
-        const dbMessage = await tx.chatMessage.create({
-          data: {
-            conversationId,
-            senderId: adminId,
-            senderType: 'ADMIN',
-            message: message.trim(),
-            metadata,
-          },
-        });
-
-        await tx.chatConversation.update({
-          where: { id: conversationId },
-          data: { updatedAt: new Date() },
-        });
-
-        this.logger.log(`Admin ${adminId} sent message ${dbMessage.id} in conversation ${conversationId}`);
-
-        return dbMessage;
-      });
-    } catch (error) {
-      this.logger.error(`Error saving admin message:`, error);
-      throw error;
-    }
+    return redisMessage;
   }
 
-  async markMessagesAsRead(conversationId: number, readerId: number) {
-    try {
-      await this.prisma.chatMessage.updateMany({
-        where: {
-          conversationId,
-          isRead: false,
-          senderId: { not: readerId },
-        },
-        data: { isRead: true },
-      });
+  private async getOrCreateConversation(userId: number, sessionId?: string) {
+    let conversation = await this.prisma.chatConversation.findFirst({
+      where: { userId, status: 'ACTIVE' },
+      orderBy: { updatedAt: 'desc' },
+    });
 
-      this.logger.log(`Marked messages as read for conversation ${conversationId} by user ${readerId}`);
-    } catch (error) {
-      this.logger.error(`Error marking messages as read:`, error);
-      throw error;
+    if (!conversation) {
+      conversation = await this.prisma.chatConversation.create({
+        data: { userId, sessionId, status: 'ACTIVE' },
+      });
+      this.logger.log('✅ New conversation created:', {
+        conversationId: conversation.id,
+        userId
+      });
     }
+
+    return conversation;
   }
 
-  async getUnreadMessagesCount() {
-    try {
-      const count = await this.prisma.chatMessage.count({
-        where: { isRead: false, senderType: 'USER' },
-      });
-      return count;
-    } catch (error) {
-      this.logger.error('Error getting unread messages count:', error);
-      throw error;
-    }
+  private generateMessageId(): string {
+    return Math.random().toString(36).substring(2) + Date.now().toString(36);
   }
 
-  async cleanupOldGuestSessions(olderThanHours: number = 24) {
-    try {
-      const cutoffDate = new Date(Date.now() - olderThanHours * 60 * 60 * 1000);
-      this.logger.log(`Cleaned up guest sessions older than ${olderThanHours} hours`);
-    } catch (error) {
-      this.logger.error('Error cleaning up old sessions:', error);
-    }
-  }
+  private async migrateMessagesToDb(messages: any[], conversationId: number, sessionId: string) {
+    const existingMessages = await this.prisma.chatMessage.findMany({
+      where: {
+        conversationId,
+        message: {
+          in: messages.map(m => m.message)
+        }
+      },
+      select: { message: true }
+    });
 
-  async getConversationIdsByUserId(userId: number): Promise<number[]> {
-    try {
-      const conversations = await this.prisma.chatConversation.findMany({
-        where: { userId, status: 'ACTIVE', sessionId: { not: null } },
-        select: { id: true },
-        orderBy: { updatedAt: 'desc' },
+    const existingMessageTexts = new Set(existingMessages.map(m => m.message));
+
+    const messagesData = messages
+      .filter(msg => !existingMessageTexts.has(msg.message))
+      .map(msg => ({
+        conversationId,
+        senderId: msg.senderId || null,
+        senderType: msg.senderType,
+        sessionId,
+        message: msg.message,
+        metadata: msg.metadata || null,
+        createdAt: new Date(msg.createdAt),
+      }));
+
+    if (messagesData.length > 0) {
+      await this.prisma.chatMessage.createMany({ data: messagesData });
+      this.logger.log('✅ Messages migrated to DB:', {
+        count: messagesData.length,
+        conversationId
       });
-
-      return conversations.map(c => c.id);
-    } catch (error) {
-      this.logger.error(`Error getting conversationIds for user ${userId}:`, error);
-      throw error;
+    } else {
+      this.logger.log('⚠️ All messages already exist, skipping migration');
     }
   }
 }

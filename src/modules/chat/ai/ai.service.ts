@@ -13,34 +13,21 @@ interface AiOptions {
 export class AiService {
   private readonly logger = new Logger(AiService.name);
   private openai: OpenAI;
-  private aiChatEnabled = true; // có thể bật/tắt toàn cục
-  private defaultModel = 'gpt-4o-mini'; // hoặc model khác
-  private defaultPrompt =
-    'Bạn là trợ lý hỗ trợ khách hàng thân thiện, trả lời ngắn gọn và chuyên nghiệp.';
+  private defaultModel = 'gpt-4o-mini';
+  private defaultPrompt = 'Bạn là chuyên gia chứng khoán Việt Nam. Trả lời ngắn gọn, chính xác và chuyên nghiệp về thị trường chứng khoán, cổ phiếu, phân tích kỹ thuật.';
 
   constructor(private prisma: PrismaService) {
-    this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    this.openai = new OpenAI({ 
+      apiKey: process.env.OPENAI_API_KEY,
+      timeout: 30000,
+      maxRetries: 2,
+    });
   }
 
-  // 🔹 Kiểm tra xem AI chat có bật không (global)
-  async isAiChatEnabled(): Promise<boolean> {
-    return this.aiChatEnabled;
-  }
-
-  // 🔹 Bật / tắt AI chat (global)
-  async setAiChatEnabled(enabled: boolean): Promise<boolean> {
-    this.aiChatEnabled = enabled;
-    this.logger.log(`AI Chat ${enabled ? 'enabled' : 'disabled'}`);
-    return this.aiChatEnabled;
-  }
-
-  // 🔹 Tạo phản hồi từ AI (không tenant)
   async generateReply(
     conversationHistory: { senderType: string; message: string }[],
     options?: AiOptions,
   ): Promise<string | null> {
-    if (!this.aiChatEnabled) return null;
-
     const systemPrompt = options?.systemPrompt || this.defaultPrompt;
 
     const messages = [
@@ -49,22 +36,46 @@ export class AiService {
         role: m.senderType === 'USER' ? 'user' : 'assistant',
         content: m.message,
       })),
-    ] as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam[];
+    ] as OpenAI.Chat.Completions.ChatCompletionMessageParam[];
 
     try {
+      this.logger.log('🤖 Calling OpenAI API...', {
+        messageCount: messages.length,
+        model: options?.model || this.defaultModel
+      });
+
       const completion = await this.openai.chat.completions.create({
         model: options?.model || this.defaultModel,
         temperature: options?.temperature ?? 0.7,
-        max_tokens: options?.maxTokens ?? 512,
+        max_tokens: options?.maxTokens ?? 800,
         messages,
       });
 
-      const reply = completion.choices[0].message?.content ?? null;
-      this.logger.log('✅ AI reply generated successfully');
-      return reply;
+      const content = completion.choices[0]?.message?.content?.trim();
+      
+      if (!content) {
+        this.logger.warn('AI returned empty content');
+        return 'Xin lỗi, tôi chưa thể xử lý câu hỏi này. Vui lòng thử lại.';
+      }
+
+      this.logger.log('✅ AI response generated', {
+        length: content.length,
+        preview: content.substring(0, 100)
+      });
+
+      return content;
+
     } catch (error) {
       this.logger.error('❌ AI generateReply error:', error);
-      return null;
+      
+      // Fallback responses based on error type
+      if (error.code === 'insufficient_quota') {
+        return 'Hiện tại dịch vụ AI đang bảo trì. Vui lòng thử lại sau.';
+      } else if (error.code === 'rate_limit_exceeded') {
+        return 'Hệ thống đang quá tải. Vui lòng đợi một chút và thử lại.';
+      } else {
+        return 'Xin lỗi, tôi đang gặp sự cố kỹ thuật. Vui lòng thử lại sau.';
+      }
     }
   }
 }

@@ -21,53 +21,52 @@ export class OrderService {
    * - Tạo lệnh trong database
    * - Xử lý matching tự động
    */
-    async createOrder(dto: CreateOrderDto) {
-    // Kiểm tra tài khoản giao dịch có tồn tại và đang hoạt động không
-    const account = await this.prisma.tradingAccount.findUnique({
-        where: { 
-        id: dto.accountId,
-        status: 'ACTIVE'
-        }
-    });
-    
-    if (!account) {
-        throw new NotFoundException(`Không tìm thấy tài khoản giao dịch hoặc tài khoản đã bị khóa`);
+async createOrder(dto: CreateOrderDto) {
+  // Kiểm tra tài khoản giao dịch có tồn tại và đang hoạt động không
+  const account = await this.prisma.tradingAccount.findUnique({
+    where: { 
+      id: dto.accountId,
+      status: 'ACTIVE'
     }
+  });
+  
+  if (!account) {
+    throw new NotFoundException(`Không tìm thấy tài khoản giao dịch hoặc tài khoản đã bị khóa`);
+  }
 
-    // Validate các điều kiện đặt lệnh
-    await this.validateOrder(dto, account);
+  // Validate các điều kiện đặt lệnh - TRUYỀN currentPrice
+  await this.validateOrder(dto, account);
 
-    // Lưu lệnh vào database - KHÔNG dùng orderId
-    const order = await this.prisma.order.create({
-        data: {
-        // KHÔNG có orderId ở đây
-        accountId: dto.accountId,
-        symbol: dto.symbol,
-        orderType: dto.orderType,
-        side: dto.side,
-        quantity: dto.quantity,
-        price: dto.price,
-        stopPrice: dto.stopPrice,
-        status: OrderStatus.PENDING,
-        notes: dto.notes,
-        },
-        include: {
-        executions: true
-        }
-    });
-
-    // Xử lý lệnh qua matching engine
-    await this.processOrder(order.id);
-
-    return {
-        success: true,
-        message: 'Đặt lệnh thành công',
-        data: new OrderResponseDto(order),
-    };
+  // Lưu lệnh vào database
+  const order = await this.prisma.order.create({
+    data: {
+      accountId: dto.accountId,
+      symbol: dto.symbol,
+      orderType: dto.orderType,
+      side: dto.side,
+      quantity: dto.quantity,
+      price: dto.price,
+      stopPrice: dto.stopPrice,
+      status: OrderStatus.PENDING,
+      notes: dto.notes,
+    },
+    include: {
+      executions: true
     }
+  });
+
+  // ✅ TRUYỀN currentPrice từ client xuống processOrder
+  await this.processOrder(order.id, dto.currentPrice);
+
+  return {
+    success: true,
+    message: 'Đặt lệnh thành công',
+    data: new OrderResponseDto(order),
+  };
+}
 
 
-    private async updateAccountAndPosition(orderId: number, quantity: number, price: number, fees: number) {
+private async updateAccountAndPosition(orderId: number, quantity: number, price: number, fees: number) {
   const order = await this.prisma.order.findUnique({
     where: { id: orderId },
     include: { account: true }
@@ -99,8 +98,13 @@ export class OrderService {
     });
   }
 
-  // UPDATE POSITION - Gọi position service
-  await this.positionService.updatePositionFromOrder(order, quantity, price);
+  // ✅ ĐẢM BẢO: Gọi position service để cập nhật position
+  try {
+    await this.positionService.updatePositionFromOrder(order, quantity, price);
+  } catch (error) {
+    console.error('Error updating position:', error);
+    // Không throw error ở đây để không ảnh hưởng đến order execution
+  }
 }
 
   /**
@@ -109,48 +113,59 @@ export class OrderService {
    * - Kiểm tra số dư khả dụng với lệnh BUY
    * - Kiểm tra số lượng cổ phiếu với lệnh SELL
    */
-  private async validateOrder(dto: CreateOrderDto, account: any) {
-    // Với lệnh LIMIT và STOP_LIMIT: bắt buộc phải có giá
-    if ((dto.orderType === OrderType.LIMIT || dto.orderType === OrderType.STOP_LIMIT) && !dto.price) {
-      throw new BadRequestException('Lệnh giới hạn yêu cầu phải có giá đặt');
-    }
+private async validateOrder(dto: CreateOrderDto, account: any) {
+  // Với lệnh LIMIT và STOP_LIMIT: bắt buộc phải có giá
+  if ((dto.orderType === OrderType.LIMIT || dto.orderType === OrderType.STOP_LIMIT) && !dto.price) {
+    throw new BadRequestException('Lệnh giới hạn yêu cầu phải có giá đặt');
+  }
 
-    // Với lệnh STOP và STOP_LIMIT: bắt buộc phải có giá kích hoạt
-    if ((dto.orderType === OrderType.STOP || dto.orderType === OrderType.STOP_LIMIT) && !dto.stopPrice) {
-      throw new BadRequestException('Lệnh dừng yêu cầu phải có giá kích hoạt');
-    }
+  // Với lệnh STOP và STOP_LIMIT: bắt buộc phải có giá kích hoạt
+  if ((dto.orderType === OrderType.STOP || dto.orderType === OrderType.STOP_LIMIT) && !dto.stopPrice) {
+    throw new BadRequestException('Lệnh dừng yêu cầu phải có giá kích hoạt');
+  }
 
-    // Kiểm tra số dư khả dụng cho lệnh MUA
-    if (dto.side === OrderSide.BUY) {
-      // Ước tính chi phí: với lệnh MARKET dùng giá thị trường, LIMIT dùng giá đặt
-      const estimatedCost = dto.orderType === OrderType.MARKET 
-        ? dto.quantity * await this.getCurrentPrice(dto.symbol) // Giá thị trường hiện tại
-        : dto.quantity * dto.price!; // Giá đặt của lệnh LIMIT
+  // Kiểm tra số dư khả dụng cho lệnh MUA
+  if (dto.side === OrderSide.BUY) {
+    // ✅ SỬA: Dùng currentPrice từ client thay vì gọi getCurrentPrice()
+    const estimatedCost = dto.orderType === OrderType.MARKET 
+      ? dto.quantity * dto.currentPrice // ✅ Dùng currentPrice từ client
+      : dto.quantity * dto.price!; // Giá đặt của lệnh LIMIT
 
-      // So sánh với số dư khả dụng trong tài khoản
-      if (Number(account.availableCash) < estimatedCost) {
-        throw new BadRequestException('Số dư khả dụng không đủ để thực hiện lệnh');
-      }
-    }
-
-    // Kiểm tra số lượng cổ phiếu khả dụng cho lệnh BÁN
-    if (dto.side === OrderSide.SELL) {
-      // Tìm vị thế (position) hiện tại của mã chứng khoán này
-      const position = await this.prisma.position.findUnique({
-        where: {
-          accountId_symbol: {
-            accountId: dto.accountId,
-            symbol: dto.symbol
-          }
-        }
-      });
-
-      // Nếu không có vị thế hoặc số lượng không đủ để bán
-      if (!position || position.quantity < dto.quantity) {
-        throw new BadRequestException('Số lượng cổ phiếu không đủ để thực hiện lệnh bán');
-      }
+    // So sánh với số dư khả dụng trong tài khoản
+    if (Number(account.availableCash) < estimatedCost) {
+      throw new BadRequestException(`Số dư khả dụng không đủ để thực hiện lệnh. Cần: ${this.formatMoney(estimatedCost)}, có: ${this.formatMoney(Number(account.availableCash))}`);
     }
   }
+
+  // Kiểm tra số lượng cổ phiếu khả dụng cho lệnh BÁN
+  if (dto.side === OrderSide.SELL) {
+    // Tìm vị thế (position) hiện tại của mã chứng khoán này
+    const position = await this.prisma.position.findUnique({
+      where: {
+        accountId_symbol: {
+          accountId: dto.accountId,
+          symbol: dto.symbol
+        }
+      }
+    });
+
+    // Nếu không có vị thế hoặc số lượng không đủ để bán
+    if (!position || position.quantity < dto.quantity) {
+      throw new BadRequestException(`Số lượng cổ phiếu không đủ để thực hiện lệnh bán. Có: ${position?.quantity || 0}, cần: ${dto.quantity}`);
+    }
+  }
+
+  // ✅ THÊM: Validate currentPrice
+  if (!dto.currentPrice || dto.currentPrice <= 0) {
+    throw new BadRequestException('Giá hiện tại không hợp lệ');
+  }
+}
+
+// Thêm hàm formatMoney để debug
+private formatMoney(amount: number): string {
+  return new Intl.NumberFormat('vi-VN').format(Math.round(amount));
+}
+
 
   /**
    * XỬ LÝ LỆNH - PHÂN LOẠI THEO TYPE
@@ -159,94 +174,82 @@ export class OrderService {
    * - STOP: chờ kích hoạt rồi thành MARKET
    * - STOP_LIMIT: chờ kích hoạt rồi thành LIMIT
    */
-  private async processOrder(orderId: number) {
-    // Lấy thông tin lệnh đầy đủ
-    const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
-      include: { account: true }
-    });
+private async processOrder(orderId: number, currentPrice: number) {
+  const order = await this.prisma.order.findUnique({
+    where: { id: orderId },
+    include: { account: true }
+  });
 
-    // Chỉ xử lý nếu lệnh tồn tại và đang ở trạng thái PENDING
-    if (!order || order.status !== OrderStatus.PENDING) return;
+  if (!order || order.status !== OrderStatus.PENDING) return;
 
-    // Phân loại xử lý theo loại lệnh
-    switch (order.orderType) {
-      case OrderType.MARKET:
-        await this.executeMarketOrder(order); // Lệnh thị trường: khớp ngay
-        break;
-      case OrderType.LIMIT:
-        await this.executeLimitOrder(order); // Lệnh giới hạn: chờ giá
-        break;
-      case OrderType.STOP:
-        await this.executeStopOrder(order); // Lệnh dừng: chờ kích hoạt
-        break;
-      case OrderType.STOP_LIMIT:
-        await this.executeStopLimitOrder(order); // Lệnh dừng giới hạn
-        break;
-    }
+  // ✅ TRUYỀN currentPrice xuống các hàm xử lý
+  switch (order.orderType) {
+    case OrderType.MARKET:
+      await this.executeMarketOrder(order, currentPrice);
+      break;
+    case OrderType.LIMIT:
+      await this.executeLimitOrder(order, currentPrice);
+      break;
+    case OrderType.STOP:
+      await this.executeStopOrder(order, currentPrice);
+      break;
+    case OrderType.STOP_LIMIT:
+      await this.executeStopLimitOrder(order, currentPrice);
+      break;
   }
+}
 
   /**
    * XỬ LÝ LỆNH MARKET - KHỚP NGAY LẬP TỨC
    * Lấy giá thị trường hiện tại và khớp toàn bộ số lượng
    */
-  private async executeMarketOrder(order: any) {
-    const currentPrice = await this.getCurrentPrice(order.symbol);
-    await this.createExecution(order.id, order.quantity, currentPrice);
-  }
+private async executeMarketOrder(order: any, currentPrice: number) {
+  // ✅ DÙNG currentPrice từ client thay vì gọi getCurrentPrice()
+  await this.createExecution(order.id, order.quantity, currentPrice);
+}
+
 
   /**
    * XỬ LÝ LỆNH LIMIT - CHỜ ĐẠT GIÁ
    * - MUA: khớp khi giá thị trường <= giá đặt
    * - BÁN: khớp khi giá thị trường >= giá đặt
    */
-  private async executeLimitOrder(order: any) {
-    const currentPrice = await this.getCurrentPrice(order.symbol);
-    
-    // Điều kiện khớp lệnh
-    if ((order.side === OrderSide.BUY && currentPrice <= order.price!) ||
-        (order.side === OrderSide.SELL && currentPrice >= order.price!)) {
-      await this.createExecution(order.id, order.quantity, currentPrice);
-    } else {
-      // Lệnh vẫn ở trạng thái chờ (trong hệ thống thực sẽ vào order book)
-      console.log(`Lệnh giới hạn ${order.orderId} đang chờ giá tốt hơn`);
-    }
+private async executeLimitOrder(order: any, currentPrice: number) {
+  // ✅ DÙNG currentPrice từ client
+  if ((order.side === OrderSide.BUY && currentPrice <= order.price!) ||
+      (order.side === OrderSide.SELL && currentPrice >= order.price!)) {
+    await this.createExecution(order.id, order.quantity, currentPrice);
   }
+}
 
   /**
    * XỬ LÝ LỆNH STOP - KHI ĐẠT GIÁ KÍCH HOẠT THÌ THÀNH MARKET
    * - MUA: kích hoạt khi giá thị trường >= giá dừng
    * - BÁN: kích hoạt khi giá thị trường <= giá dừng
    */
-  private async executeStopOrder(order: any) {
-    const currentPrice = await this.getCurrentPrice(order.symbol);
-    
-    // Kiểm tra điều kiện kích hoạt
-    if ((order.side === OrderSide.BUY && currentPrice >= order.stopPrice!) ||
-        (order.side === OrderSide.SELL && currentPrice <= order.stopPrice!)) {
-      // Khi kích hoạt, lệnh STOP trở thành lệnh MARKET
-      await this.createExecution(order.id, order.quantity, currentPrice);
-    }
+private async executeStopOrder(order: any, currentPrice: number) {
+  // ✅ DÙNG currentPrice từ client
+  if ((order.side === OrderSide.BUY && currentPrice >= order.stopPrice!) ||
+      (order.side === OrderSide.SELL && currentPrice <= order.stopPrice!)) {
+    await this.createExecution(order.id, order.quantity, currentPrice);
   }
+}
 
   /**
    * XỬ LÝ LỆNH STOP LIMIT - KẾT HỢP STOP VÀ LIMIT
    * Bước 1: Chờ đạt giá kích hoạt (như STOP)
    * Bước 2: Sau khi kích hoạt, trở thành lệnh LIMIT
    */
-  private async executeStopLimitOrder(order: any) {
-    const currentPrice = await this.getCurrentPrice(order.symbol);
-    
-    // Bước 1: Kiểm tra điều kiện dừng
-    if ((order.side === OrderSide.BUY && currentPrice >= order.stopPrice!) ||
-        (order.side === OrderSide.SELL && currentPrice <= order.stopPrice!)) {
-      // Bước 2: Kiểm tra điều kiện giới hạn
-      if ((order.side === OrderSide.BUY && currentPrice <= order.price!) ||
-          (order.side === OrderSide.SELL && currentPrice >= order.price!)) {
-        await this.createExecution(order.id, order.quantity, currentPrice);
-      }
+private async executeStopLimitOrder(order: any, currentPrice: number) {
+  // ✅ DÙNG currentPrice từ client
+  if ((order.side === OrderSide.BUY && currentPrice >= order.stopPrice!) ||
+      (order.side === OrderSide.SELL && currentPrice <= order.stopPrice!)) {
+    if ((order.side === OrderSide.BUY && currentPrice <= order.price!) ||
+        (order.side === OrderSide.SELL && currentPrice >= order.price!)) {
+      await this.createExecution(order.id, order.quantity, currentPrice);
     }
   }
+}
 
   /**
    * TẠO BẢN GHI KHỚP LỆNH (EXECUTION)
@@ -311,22 +314,6 @@ export class OrderService {
   private calculateTax(quantity: number, price: number): number {
     const tradeValue = quantity * price; // Giá trị giao dịch
     return tradeValue * 0.001; // 0.1%
-  }
-
-  /**
-   * LẤY GIÁ THỊ TRƯỜNG HIỆN TẠI
-   * TODO: Thay thế bằng dữ liệu thực từ sàn
-   */
-  private async getCurrentPrice(symbol: string): Promise<number> {
-    // Giá mock - trong thực tế sẽ lấy từ market data service
-    const mockPrices: { [key: string]: number } = {
-      'VIC': 45000,   // Vingroup
-      'VCB': 95000,   // Vietcombank
-      'FPT': 80000,   // FPT Corporation
-      'MWG': 120000,  // Thế giới di động
-      'VNM': 70000,   // Vinamilk
-    };
-    return mockPrices[symbol] || 50000; // Mặc định 50,000 nếu không tìm thấy
   }
 
 

@@ -1,9 +1,9 @@
 // src/order/dto/create-order.dto.ts
-import { IsEnum, IsInt, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsNumber, IsString, IsEnum, IsOptional, Min, IsPositive } from 'class-validator';
 import { OrderType, OrderSide } from '@prisma/client';
 
 export class CreateOrderDto {
-  @IsInt()
+  @IsNumber()
   accountId: number;
 
   @IsString()
@@ -15,21 +15,26 @@ export class CreateOrderDto {
   @IsEnum(OrderSide)
   side: OrderSide;
 
-  @IsInt()
-  @IsPositive()
+  @IsNumber()
+  @Min(100)
   quantity: number;
 
+  @IsOptional()
   @IsNumber()
   @IsPositive()
-  @IsOptional()
   price?: number;
 
+  @IsOptional()
   @IsNumber()
   @IsPositive()
-  @IsOptional()
   stopPrice?: number;
 
-  @IsString()
   @IsOptional()
+  @IsString()
   notes?: string;
+
+  // ✅ THÊM: Nhận giá hiện tại từ client
+  @IsNumber()
+  @IsPositive()
+  currentPrice: number;
 }

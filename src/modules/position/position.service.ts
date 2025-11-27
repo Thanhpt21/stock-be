@@ -155,22 +155,26 @@ export class PositionService {
     const realizedPL = saleValue - costBasis;
 
     if (newQuantity === 0) {
-      // Xóa vị thế nếu đã bán hết
-      await this.prisma.position.delete({
-        where: { id: existingPosition.id }
+      // ✅ SỬA: KHÔNG xóa position, mà set quantity = 0
+      const updatedPosition = await this.prisma.position.update({
+        where: { id: existingPosition.id },
+        data: {
+          quantity: 0, // Set về 0 thay vì xóa
+          realizedPL: { increment: realizedPL },
+          lastUpdated: new Date()
+        }
       });
 
-      // Cập nhật realized PL vào account hoặc lưu lịch sử
+      // Cập nhật realized PL vào account
       await this.updateRealizedPL(accountId, realizedPL);
 
-      return null;
+      return updatedPosition; // ✅ Trả về position thay vì null
     } else {
       // Cập nhật vị thế còn lại
       const updatedPosition = await this.prisma.position.update({
         where: { id: existingPosition.id },
         data: {
           quantity: newQuantity,
-          // Giá trung bình không thay đổi khi bán
           realizedPL: { increment: realizedPL },
           lastUpdated: new Date()
         }
@@ -182,7 +186,6 @@ export class PositionService {
       return updatedPosition;
     }
   }
-
   /**
    * TÍNH GIÁ TRUNG BÌNH MỚI KHI MUA THÊM
    */
